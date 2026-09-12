@@ -6,7 +6,7 @@ from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Request, 
 from app.core.config import GITHUB_WEBHOOK_SECRET
 from app.schemas.github import PullRequestWebhookPayload
 from app.services.github_webhooks import valid_github_signature
-from app.workers.review import enqueue_pr_review
+from app.workers.review import review_pull_request
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/webhooks", tags=["github"])
@@ -50,7 +50,7 @@ async def receive_github_events(
         return {"status": "ignored", "reason": "unsupported pull request action"}
 
     background_tasks.add_task(
-        enqueue_pr_review,
+        review_pull_request,
         delivery_id=x_github_delivery,
         repository=payload.repository.full_name,
         pr_number=payload.pull_request.number,
