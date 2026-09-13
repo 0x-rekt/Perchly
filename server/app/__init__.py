@@ -1,1 +1,1 @@
-"""AI PR review service package."""
+"""Perchly pull-request review service package."""

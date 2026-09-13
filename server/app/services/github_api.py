@@ -1,5 +1,6 @@
 import time
 from pathlib import Path
+from typing import Any
 
 import httpx
 import jwt
@@ -76,6 +77,21 @@ class GitHubAppClient:
             headers={"Accept": "application/vnd.github.v3.diff"},
         )
         return response.text
+
+    async def pull_request_details(
+        self, *, repository: str, pr_number: int, installation_token: str
+    ) -> tuple[str, str | None]:
+        response = await self._request(
+            "GET",
+            f"/repos/{repository}/pulls/{pr_number}",
+            token=installation_token,
+        )
+        payload: dict[str, Any] = response.json()
+        title = payload.get("title")
+        body = payload.get("body")
+        if not isinstance(title, str):
+            raise GitHubApiError("GitHub pull-request response did not contain a title")
+        return title, body if isinstance(body, str) else None
 
     async def create_pull_request_comment(
         self, *, repository: str, pr_number: int, body: str, installation_token: str

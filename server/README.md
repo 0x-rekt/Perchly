@@ -1,4 +1,4 @@
-# AI PR Review Agent API
+# Perchly API
 
 Run the development server:
 
@@ -17,6 +17,7 @@ Required local configuration in `.env`:
 GITHUB_APP_ID=your-app-id
 GITHUB_WEBHOOK_SECRET=your-webhook-secret
 GITHUB_PRIVATE_KEY_PATH=./your-github-app-private-key.pem
+GEMINI_API_KEY=your-gemini-api-key
 ```
 
 ## Layout
