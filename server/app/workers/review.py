@@ -2,9 +2,11 @@ import logging
 
 from app.core.config import github_app_credentials
 from app.schemas.findings import Finding, ReviewResult
+from app.services.aggregation import AggregatedReview, aggregate_specialist_results
 from app.services.gemini import MAX_DIFF_CHARACTERS, review_diff
 from app.services.github_api import GitHubAppClient
 from app.services.idempotency import IdempotencyStore
+from app.services.specialist_runner import run_specialists
 
 logger = logging.getLogger(__name__)
 idempotency_store = IdempotencyStore()
@@ -33,6 +35,39 @@ def format_review_comment(review: ReviewResult, *, was_truncated: bool) -> str:
     lines.append("")
     for finding in review.findings:
         lines.extend(_format_finding(finding))
+    return "\n".join(lines).rstrip()
+
+
+def format_aggregated_review_comment(
+    review: AggregatedReview, *, was_truncated: bool
+) -> str:
+    """Create the Phase 1 summary comment from aggregated specialist output."""
+    lines = ["## Perchly review", ""]
+    if was_truncated:
+        lines.extend(
+            [
+                "_Review scope was truncated; only the first part of the diff was analyzed._",
+                "",
+            ]
+        )
+
+    if review.findings:
+        category_summary = ", ".join(
+            f"{count} {category.replace('_', ' ')}"
+            for category, count in sorted(review.category_counts.items())
+        )
+        lines.append(f"Found {len(review.findings)} actionable issue(s): {category_summary}.")
+    else:
+        lines.append("No actionable findings from the available specialists.")
+
+    if review.failures:
+        unavailable = ", ".join(sorted(category.replace("_", " ") for category in review.failures))
+        lines.append(f"Unavailable specialists: {unavailable}.")
+
+    if review.findings:
+        lines.append("")
+        for finding in review.findings:
+            lines.extend(_format_finding(finding))
     return "\n".join(lines).rstrip()
 
 
@@ -99,9 +134,14 @@ async def review_pull_request(
     )
 
     try:
-        review = await review_diff(title=title, description=description, diff=diff)
-        comment = format_review_comment(
-            review, was_truncated=len(diff) > MAX_DIFF_CHARACTERS
+        specialist_run = await run_specialists(
+            title=title,
+            description=description,
+            diff=diff,
+        )
+        aggregated_review = aggregate_specialist_results(specialist_run)
+        comment = format_aggregated_review_comment(
+            aggregated_review, was_truncated=len(diff) > MAX_DIFF_CHARACTERS
         )
         await github.create_pull_request_comment(
             repository=repository,
@@ -122,9 +162,11 @@ async def review_pull_request(
         return
 
     logger.info(
-        "Posted Perchly review delivery_id=%s repository=%s pr_number=%s findings=%s",
+        "Posted Perchly specialist review delivery_id=%s repository=%s pr_number=%s "
+        "findings=%s unavailable_specialists=%s",
         delivery_id,
         repository,
         pr_number,
-        len(review.findings),
+        len(aggregated_review.findings),
+        len(aggregated_review.failures),
     )
