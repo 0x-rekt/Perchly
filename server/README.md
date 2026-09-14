@@ -28,6 +28,12 @@ uv run pytest
 
 Golden PR diffs for later model-quality evaluation live in `app/evals/fixtures/`.
 
+Run the live Phase 0 golden-model gate (uses `GEMINI_API_KEY` and consumes API quota):
+
+```powershell
+uv run python -m app.evals.run
+```
+
 ## Layout
 
 ```text

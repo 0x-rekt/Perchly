@@ -21,6 +21,11 @@ security, code quality, test coverage, or documentation. Do not invent files, li
 numbers, dependencies, or behavior not supported by the diff. Prefer zero findings
 to speculative or stylistic nitpicks. Each finding must point to a changed line.
 
+For each newly introduced or changed executable branch, check whether the diff adds
+corresponding tests. If it does not, emit one `test_coverage` warning that names the
+missing behavior or edge cases. Prioritize that test-coverage finding over a generic
+code-quality critique of the same changed branch.
+
 Pull request title: {title}
 Pull request description: {description or "(none)"}
 
@@ -39,6 +44,7 @@ def _generate_review(*, prompt: str) -> ReviewResult:
         config=types.GenerateContentConfig(
             response_mime_type="application/json",
             response_schema=ReviewResult,
+            temperature=0,
         ),
     )
     if not response.text:
