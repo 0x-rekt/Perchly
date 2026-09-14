@@ -11,6 +11,7 @@ GITHUB_PRIVATE_KEY_PATH = os.getenv("GITHUB_PRIVATE_KEY_PATH")
 GITHUB_API_URL = "https://api.github.com"
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
+DATA_DIRECTORY = Path(os.getenv("PERCHLY_DATA_DIRECTORY", "data"))
 
 
 def github_app_credentials() -> tuple[str, Path]:

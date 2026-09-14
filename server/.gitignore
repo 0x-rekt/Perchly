@@ -12,3 +12,6 @@ wheels/
 # Secrets and GitHub App private keys
 .env
 *.pem
+
+# Runtime state
+data/

@@ -20,6 +20,14 @@ GITHUB_PRIVATE_KEY_PATH=./your-github-app-private-key.pem
 GEMINI_API_KEY=your-gemini-api-key
 ```
 
+Run the Phase 0 automated checks:
+
+```powershell
+uv run pytest
+```
+
+Golden PR diffs for later model-quality evaluation live in `app/evals/fixtures/`.
+
 ## Layout
 
 ```text

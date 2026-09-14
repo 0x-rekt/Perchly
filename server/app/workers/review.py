@@ -4,8 +4,16 @@ from app.core.config import github_app_credentials
 from app.schemas.findings import Finding, ReviewResult
 from app.services.gemini import MAX_DIFF_CHARACTERS, review_diff
 from app.services.github_api import GitHubAppClient
+from app.services.idempotency import IdempotencyStore
 
 logger = logging.getLogger(__name__)
+idempotency_store = IdempotencyStore()
+
+
+def _release_failed_review(*, repository: str, pr_number: int, head_sha: str) -> None:
+    idempotency_store.release_review(
+        repository=repository, pr_number=pr_number, head_sha=head_sha
+    )
 
 
 def format_review_comment(review: ReviewResult, *, was_truncated: bool) -> str:
@@ -75,6 +83,9 @@ async def review_pull_request(
             repository,
             pr_number,
         )
+        _release_failed_review(
+            repository=repository, pr_number=pr_number, head_sha=head_sha
+        )
         return
 
     logger.info(
@@ -104,6 +115,9 @@ async def review_pull_request(
             delivery_id,
             repository,
             pr_number,
+        )
+        _release_failed_review(
+            repository=repository, pr_number=pr_number, head_sha=head_sha
         )
         return
 

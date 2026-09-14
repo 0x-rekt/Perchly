@@ -5,6 +5,7 @@ from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Request, 
 
 from app.core.config import GITHUB_WEBHOOK_SECRET
 from app.schemas.github import PullRequestWebhookPayload
+from app.services.idempotency import IdempotencyStore
 from app.services.github_webhooks import valid_github_signature
 from app.workers.review import review_pull_request
 
@@ -12,6 +13,11 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/webhooks", tags=["github"])
 
 SUPPORTED_PULL_REQUEST_ACTIONS = frozenset({"opened", "reopened", "synchronize"})
+idempotency_store = IdempotencyStore()
+
+
+def is_supported_pull_request_action(action: str) -> bool:
+    return action in SUPPORTED_PULL_REQUEST_ACTIONS
 
 
 @router.post("/github", status_code=status.HTTP_202_ACCEPTED)
@@ -46,8 +52,17 @@ async def receive_github_events(
     except ValueError as error:
         raise HTTPException(status_code=400, detail="Invalid pull request payload") from error
 
-    if payload.action not in SUPPORTED_PULL_REQUEST_ACTIONS:
+    if not is_supported_pull_request_action(payload.action):
         return {"status": "ignored", "reason": "unsupported pull request action"}
+
+    if not idempotency_store.claim(
+        delivery_id=x_github_delivery,
+        repository=payload.repository.full_name,
+        pr_number=payload.pull_request.number,
+        head_sha=payload.pull_request.head.sha,
+    ):
+        logger.info("Ignoring duplicate review delivery_id=%s", x_github_delivery)
+        return {"status": "ignored", "reason": "duplicate delivery or reviewed commit"}
 
     background_tasks.add_task(
         review_pull_request,

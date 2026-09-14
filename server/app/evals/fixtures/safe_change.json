@@ -1,0 +1,7 @@
+{
+  "name": "safe documentation-only change",
+  "title": "Clarify installation instructions",
+  "description": "Documentation update only.",
+  "diff": "diff --git a/README.md b/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-Install with pip.\n+Install with uv or pip.\n",
+  "expected_findings": []
+}
