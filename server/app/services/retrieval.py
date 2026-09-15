@@ -16,6 +16,7 @@ from app.core.config import (
     gemini_api_key,
 )
 from app.schemas.findings import FindingCategory
+from app.services.github_api import RepositoryFile
 
 _HUNK_HEADER = re.compile(r"^@@ -(?:\d+)(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
 _FILE_HEADER = re.compile(r"^diff --git a/(.*?) b/(.*?)$")
@@ -35,6 +36,31 @@ class CodeChunk:
     line_start: int
     line_end: int
     content: str
+
+
+def chunk_file_content(path: str, content: str) -> list[CodeChunk]:
+    """Split a full repository file into bounded, line-addressable chunks."""
+    lines = content.splitlines()
+    chunks: list[CodeChunk] = []
+    start = 0
+    while start < len(lines):
+        end = start
+        characters = 0
+        while end < len(lines) and (
+            end == start or characters + len(lines[end]) + 1 <= _MAX_CHUNK_CHARACTERS
+        ):
+            characters += len(lines[end]) + 1
+            end += 1
+        chunks.append(
+            CodeChunk(
+                path=path,
+                line_start=start + 1,
+                line_end=end,
+                content="\n".join(lines[start:end]),
+            )
+        )
+        start = end
+    return chunks
 
 
 def chunk_changed_files(diff: str) -> list[CodeChunk]:
@@ -100,9 +126,20 @@ class RetrievalService:
     """Persist changed code in Neon and retrieve category-specific context."""
 
     async def build_contexts(
-        self, *, repository: str, head_sha: str, diff: str
+        self,
+        *,
+        repository: str,
+        head_sha: str,
+        diff: str,
+        repository_files: list[RepositoryFile] | None = None,
     ) -> dict[FindingCategory, str]:
-        chunks = chunk_changed_files(diff)
+        chunks = [
+            chunk
+            for repository_file in repository_files or []
+            for chunk in chunk_file_content(repository_file.path, repository_file.content)
+        ]
+        if not chunks:
+            chunks = chunk_changed_files(diff)
         if not chunks:
             return {category: "" for category in SPECIALIST_QUERIES}
         return await asyncio.to_thread(
@@ -134,7 +171,7 @@ class RetrievalService:
             register_vector(connection)
             _initialize_schema(connection)
             repository_id = _upsert_repository(connection, repository)
-            chunk_ids = _store_chunks(
+            _store_chunks(
                 connection,
                 repository_id=repository_id,
                 head_sha=head_sha,
@@ -150,7 +187,6 @@ class RetrievalService:
                     head_sha=head_sha,
                     category=category,
                     query_embedding=Vector(query_embedding),
-                    chunk_ids=chunk_ids,
                 )
             _run(connection, "COMMIT")
             return contexts
@@ -203,13 +239,13 @@ def _initialize_schema(connection) -> None:
             line_start INTEGER NOT NULL,
             line_end INTEGER NOT NULL,
             content TEXT NOT NULL,
-            embedding vector({EMBEDDING_DIMENSIONS}) NOT NULL,
             embedding_model TEXT NOT NULL,
             created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(repository_id, head_sha, path, line_start, line_end)
         )
         """,
     )
+    _run(connection, "ALTER TABLE code_chunks DROP COLUMN IF EXISTS embedding")
     _run(connection,
         f"""
         CREATE TABLE IF NOT EXISTS embeddings (
@@ -254,10 +290,10 @@ def _store_chunks(connection, *, repository_id: int, head_sha: str, chunks: list
         row = _run(connection,
             """
             INSERT INTO code_chunks
-                (repository_id, head_sha, path, line_start, line_end, content, embedding, embedding_model)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                (repository_id, head_sha, path, line_start, line_end, content, embedding_model)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (repository_id, head_sha, path, line_start, line_end)
-            DO UPDATE SET content = EXCLUDED.content, embedding = EXCLUDED.embedding,
+            DO UPDATE SET content = EXCLUDED.content,
                           embedding_model = EXCLUDED.embedding_model
             RETURNING id
             """,
@@ -268,7 +304,6 @@ def _store_chunks(connection, *, repository_id: int, head_sha: str, chunks: list
                 chunk.line_start,
                 chunk.line_end,
                 chunk.content,
-                Vector(embedding),
                 GEMINI_EMBEDDING_MODEL,
             ),
         )[0]
@@ -291,7 +326,6 @@ def _retrieve_category_context(
     head_sha: str,
     category: FindingCategory,
     query_embedding: list[float],
-    chunk_ids: list[int],
 ) -> str:
     _run(connection,
         "DELETE FROM review_context WHERE repository_id = %s AND head_sha = %s AND category = %s",
@@ -299,14 +333,15 @@ def _retrieve_category_context(
     )
     rows = _run(connection,
         """
-        SELECT id, path, line_start, line_end, content,
-               1 - (embedding <=> %s) AS similarity
+         SELECT code_chunks.id, path, line_start, line_end, content,
+             1 - (embeddings.vector <=> %s) AS similarity
         FROM code_chunks
-        WHERE repository_id = %s AND head_sha = %s AND id = ANY(%s)
-        ORDER BY embedding <=> %s
+         JOIN embeddings ON embeddings.chunk_id = code_chunks.id
+        WHERE repository_id = %s
+         ORDER BY embeddings.vector <=> %s
         LIMIT %s
         """,
-        (query_embedding, repository_id, head_sha, chunk_ids, query_embedding, RETRIEVAL_TOP_K),
+        (query_embedding, repository_id, query_embedding, RETRIEVAL_TOP_K),
     )
     parts: list[str] = []
     for rank, row in enumerate(rows, start=1):

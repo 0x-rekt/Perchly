@@ -1,4 +1,8 @@
-from app.services.retrieval import SPECIALIST_QUERIES, chunk_changed_files
+from app.services.retrieval import (
+    SPECIALIST_QUERIES,
+    chunk_changed_files,
+    chunk_file_content,
+)
 
 
 def test_chunk_changed_files_tracks_new_file_lines_and_paths() -> None:
@@ -36,3 +40,13 @@ def test_retrieval_defines_one_query_for_each_specialist() -> None:
         "test_coverage",
         "docs",
     }
+
+
+def test_chunk_file_content_preserves_full_file_line_ranges() -> None:
+    chunks = chunk_file_content("src/service.ts", "line one\nline two\nline three")
+
+    assert len(chunks) == 1
+    assert chunks[0].path == "src/service.ts"
+    assert chunks[0].line_start == 1
+    assert chunks[0].line_end == 3
+    assert chunks[0].content == "line one\nline two\nline three"

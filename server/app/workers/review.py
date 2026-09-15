@@ -107,6 +107,12 @@ async def review_pull_request(
             pr_number=pr_number,
             installation_token=installation_token,
         )
+        repository_files = await github.pull_request_repository_context(
+            repository=repository,
+            pr_number=pr_number,
+            head_sha=head_sha,
+            installation_token=installation_token,
+        )
         title, description = await github.pull_request_details(
             repository=repository,
             pr_number=pr_number,
@@ -139,6 +145,7 @@ async def review_pull_request(
             repository=repository,
             head_sha=head_sha,
             diff=diff,
+            repository_files=repository_files,
         )
         logger.info(
             "Retrieved specialist context delivery_id=%s repository=%s pr_number=%s "
