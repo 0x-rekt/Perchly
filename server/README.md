@@ -18,7 +18,15 @@ GITHUB_APP_ID=your-app-id
 GITHUB_WEBHOOK_SECRET=your-webhook-secret
 GITHUB_PRIVATE_KEY_PATH=./your-github-app-private-key.pem
 GEMINI_API_KEY=your-gemini-api-key
+DATABASE_URL=postgresql://user:password@host/dbname?sslmode=require
+# Optional retrieval settings
+GEMINI_EMBEDDING_MODEL=gemini-embedding-001
+EMBEDDING_DIMENSIONS=768
 ```
+
+The retrieval layer creates the `repositories`, `code_chunks`, `embeddings`, and
+`review_context` tables in Neon on the first review. The Neon project must have the
+`vector` extension enabled.
 
 Run the Phase 0 automated checks:
 

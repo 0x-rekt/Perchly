@@ -6,6 +6,7 @@ from app.services.aggregation import AggregatedReview, aggregate_specialist_resu
 from app.services.gemini import MAX_DIFF_CHARACTERS, review_diff
 from app.services.github_api import GitHubAppClient
 from app.services.idempotency import IdempotencyStore
+from app.services.retrieval import RetrievalService
 from app.services.specialist_runner import run_specialists
 
 logger = logging.getLogger(__name__)
@@ -134,12 +135,46 @@ async def review_pull_request(
     )
 
     try:
+        contexts = await RetrievalService().build_contexts(
+            repository=repository,
+            head_sha=head_sha,
+            diff=diff,
+        )
+        logger.info(
+            "Retrieved specialist context delivery_id=%s repository=%s pr_number=%s "
+            "categories=%s",
+            delivery_id,
+            repository,
+            pr_number,
+            ",".join(sorted(contexts)),
+        )
+
         specialist_run = await run_specialists(
             title=title,
             description=description,
             diff=diff,
+            contexts=contexts,
         )
+        logger.info(
+            "Completed parallel specialist review delivery_id=%s repository=%s "
+            "pr_number=%s successful=%s failed=%s",
+            delivery_id,
+            repository,
+            pr_number,
+            len(specialist_run.results),
+            len(specialist_run.failures),
+        )
+
         aggregated_review = aggregate_specialist_results(specialist_run)
+        logger.info(
+            "Aggregated specialist findings delivery_id=%s repository=%s pr_number=%s "
+            "findings=%s",
+            delivery_id,
+            repository,
+            pr_number,
+            len(aggregated_review.findings),
+        )
+
         comment = format_aggregated_review_comment(
             aggregated_review, was_truncated=len(diff) > MAX_DIFF_CHARACTERS
         )
