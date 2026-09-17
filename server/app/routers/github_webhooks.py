@@ -1,13 +1,14 @@
 import logging
 from typing import Annotated
 
-from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Request, status
+from fastapi import APIRouter, Header, HTTPException, Request, status
 
 from app.core.config import GITHUB_WEBHOOK_SECRET
 from app.schemas.github import PullRequestWebhookPayload
+from app.temporal.client import start_review_workflow
+from app.temporal.workflows import ReviewWorkflowInput
 from app.services.idempotency import IdempotencyStore
 from app.services.github_webhooks import valid_github_signature
-from app.workers.review import review_pull_request
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/webhooks", tags=["github"])
@@ -23,7 +24,6 @@ def is_supported_pull_request_action(action: str) -> bool:
 @router.post("/github", status_code=status.HTTP_202_ACCEPTED)
 async def receive_github_events(
     request: Request,
-    background_tasks: BackgroundTasks,
     x_github_event: Annotated[str | None, Header()] = None,
     x_github_delivery: Annotated[str | None, Header()] = None,
     x_hub_signature_256: Annotated[str | None, Header()] = None,
@@ -64,12 +64,25 @@ async def receive_github_events(
         logger.info("Ignoring duplicate review delivery_id=%s", x_github_delivery)
         return {"status": "ignored", "reason": "duplicate delivery or reviewed commit"}
 
-    background_tasks.add_task(
-        review_pull_request,
-        delivery_id=x_github_delivery,
-        repository=payload.repository.full_name,
-        pr_number=payload.pull_request.number,
-        head_sha=payload.pull_request.head.sha,
-        installation_id=payload.installation.id,
-    )
+    try:
+        await start_review_workflow(
+            ReviewWorkflowInput(
+                delivery_id=x_github_delivery,
+                repository=payload.repository.full_name,
+                pr_number=payload.pull_request.number,
+                head_sha=payload.pull_request.head.sha,
+                installation_id=payload.installation.id,
+            )
+        )
+    except Exception as error:
+        logger.exception("Unable to start Temporal review delivery_id=%s", x_github_delivery)
+        idempotency_store.release_review(
+            repository=payload.repository.full_name,
+            pr_number=payload.pull_request.number,
+            head_sha=payload.pull_request.head.sha,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Review workflow is unavailable",
+        ) from error
     return {"status": "accepted", "delivery_id": x_github_delivery}

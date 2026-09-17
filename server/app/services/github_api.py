@@ -202,6 +202,49 @@ class GitHubAppClient:
             json={"body": body},
         )
 
+    async def create_idempotent_pull_request_comment(
+        self,
+        *,
+        repository: str,
+        pr_number: int,
+        body: str,
+        marker: str,
+        installation_token: str,
+    ) -> bool:
+        """Create a comment only when no existing comment contains the marker."""
+        page = 1
+        while True:
+            response = await self._request(
+                "GET",
+                f"/repos/{repository}/issues/{pr_number}/comments?per_page=100&page={page}",
+                token=installation_token,
+            )
+            payload = response.json()
+            if not isinstance(payload, list):
+                raise GitHubApiError("GitHub issue-comments response was not a list")
+            if any(
+                isinstance(comment, dict)
+                and marker in (comment.get("body") or "")
+                for comment in payload
+            ):
+                return False
+            if len(payload) < 100:
+                break
+            page += 1
+
+        await self.create_pull_request_comment(
+            repository=repository,
+            pr_number=pr_number,
+            body=f"{marker}\n{body}",
+            installation_token=installation_token,
+        )
+        return True
+
+
+def review_comment_marker(*, repository: str, pr_number: int, head_sha: str) -> str:
+    """Return the stable marker used to make one review idempotent."""
+    return f"<!-- perchly-review:{repository}:{pr_number}:{head_sha} -->"
+
 
 def _repository_import_candidates(source_path: str, reference: str) -> list[str]:
     base = posixpath.normpath(posixpath.join(posixpath.dirname(source_path), reference))

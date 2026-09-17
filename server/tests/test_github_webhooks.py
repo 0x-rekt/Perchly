@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 
+import app.routers.github_webhooks as github_webhooks
 from app.services.github_webhooks import valid_github_signature
 from app.routers.github_webhooks import is_supported_pull_request_action
 

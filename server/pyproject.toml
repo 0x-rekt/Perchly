@@ -15,6 +15,7 @@ dependencies = [
     "uvicorn>=0.52.4",
     "pgvector>=0.5.0",
     "pg8000>=1.31.5",
+    "temporalio>=1.33.0",
 ]
 
 [tool.pytest.ini_options]

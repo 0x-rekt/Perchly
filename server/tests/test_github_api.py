@@ -43,3 +43,30 @@ def test_pull_request_repository_context_paginates_changed_files() -> None:
     ]
     assert len(files) == 101
     assert files[-1].path == "src/file_100.py"
+
+
+def test_idempotent_comment_skips_existing_marker() -> None:
+    class FakeGitHubClient(GitHubAppClient):
+        def __init__(self) -> None:
+            super().__init__(app_id="test", private_key_path=Path("missing.pem"))
+            self.posts = 0
+
+        async def _request(self, method: str, path: str, *, token: str, headers=None, json=None):
+            if method == "GET":
+                return SimpleNamespace(json=lambda: [{"body": "<!-- marker -->"}])
+            self.posts += 1
+            return SimpleNamespace(json=lambda: {})
+
+    client = FakeGitHubClient()
+    posted = asyncio.run(
+        client.create_idempotent_pull_request_comment(
+            repository="acme/repo",
+            pr_number=1,
+            body="review",
+            marker="<!-- marker -->",
+            installation_token="token",
+        )
+    )
+
+    assert not posted
+    assert client.posts == 0
