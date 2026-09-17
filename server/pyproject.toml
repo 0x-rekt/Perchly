@@ -22,5 +22,5 @@ dependencies = [
 pythonpath = ["."]
 testpaths = ["tests"]
 markers = [
-    "integration: requires live Neon and Gemini credentials",
+    "integration: requires cloud PostgreSQL and Gemini credentials",
 ]

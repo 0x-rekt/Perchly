@@ -25,12 +25,12 @@ EMBEDDING_DIMENSIONS=768
 ```
 
 The retrieval layer creates the `repositories`, `code_chunks`, `embeddings`, and
-`review_context` tables in Neon on the first review. Each review fetches full text
+`review_context` tables in cloud PostgreSQL on the first review. Each review fetches full text
 for changed files, chunks bounded relative-import dependencies when available, and
 retrieves across the repository's stored chunks. Retrieval is incremental: the MVP
 does not clone or index the entire repository up front. A repository's searchable
 context grows as PRs are reviewed, so unvisited files are not available until they
-are fetched through a reviewed PR or another indexing workflow. The Neon project
+are fetched through a reviewed PR or another indexing workflow. The cloud PostgreSQL project
 must have the `vector` extension enabled. Historical chunks from previous PR head
 SHAs remain searchable for now; this preserves useful context but can leave stale
 duplicate versions that rank highly. A later cleanup or version-selection policy is

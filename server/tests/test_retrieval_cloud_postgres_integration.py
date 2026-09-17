@@ -10,7 +10,7 @@ from app.core.config import EMBEDDING_DIMENSIONS, GEMINI_EMBEDDING_MODEL
 from app.services.retrieval import CodeChunk, RetrievalService, _run
 
 
-def _neon_connection():
+def _cloud_postgres_connection():
     from pg8000.native import Connection
 
     parsed = urlparse(os.environ["DATABASE_URL"])
@@ -26,12 +26,12 @@ def _neon_connection():
 
 
 @pytest.mark.integration
-def test_neon_retrieval_round_trip() -> None:
+def test_cloud_postgres_retrieval_round_trip() -> None:
     load_dotenv()
-    if os.getenv("RUN_NEON_INTEGRATION") != "1":
-        pytest.skip("Set RUN_NEON_INTEGRATION=1 to run the live integration test")
+    if os.getenv("RUN_POSTGRES_INTEGRATION") != "1":
+        pytest.skip("Set RUN_POSTGRES_INTEGRATION=1 to run the live integration test")
     if not os.getenv("DATABASE_URL") or not os.getenv("GEMINI_API_KEY"):
-        pytest.skip("Requires DATABASE_URL and GEMINI_API_KEY for Neon integration")
+        pytest.skip("Requires DATABASE_URL and GEMINI_API_KEY for cloud PostgreSQL integration")
 
     from pgvector.pg8000 import register_vector
 
@@ -45,7 +45,7 @@ def test_neon_retrieval_round_trip() -> None:
             content="def load_token():\n    return os.environ['SERVICE_TOKEN']\n",
         )
     ]
-    connection = _neon_connection()
+    connection = _cloud_postgres_connection()
     try:
         register_vector(connection)
         contexts = RetrievalService()._build_contexts(

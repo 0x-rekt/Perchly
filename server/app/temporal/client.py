@@ -3,6 +3,7 @@ import inspect
 import os
 
 from temporalio.client import Client
+from temporalio.common import WorkflowIDReusePolicy
 
 from app.temporal.workflows import ReviewWorkflow, ReviewWorkflowInput
 
@@ -45,5 +46,6 @@ async def start_review_workflow(input: ReviewWorkflowInput) -> str:
         input,
         id=f"perchly-review-{input.repository}-{input.pr_number}-{input.head_sha}",
         task_queue=os.getenv("TEMPORAL_TASK_QUEUE", "perchly-reviews"),
+        id_reuse_policy=WorkflowIDReusePolicy.REJECT_DUPLICATE,
     )
     return handle.id

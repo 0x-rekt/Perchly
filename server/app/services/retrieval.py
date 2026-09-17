@@ -123,7 +123,7 @@ def chunk_changed_files(diff: str) -> list[CodeChunk]:
 
 
 class RetrievalService:
-    """Persist changed code in Neon and retrieve category-specific context."""
+    """Persist changed code in cloud PostgreSQL and retrieve category-specific context."""
 
     async def build_contexts(
         self,
