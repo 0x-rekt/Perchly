@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 
 from app.core.config import EMBEDDING_DIMENSIONS, GEMINI_EMBEDDING_MODEL
 from app.services.retrieval import CodeChunk, RetrievalService, _run
+from app.services.review_queue import ReviewQueueService
 
 
 def _cloud_postgres_connection():
@@ -141,4 +142,88 @@ def test_cloud_postgres_retrieval_round_trip() -> None:
         )
         _run(connection, "DELETE FROM repositories WHERE full_name = %s", (repository,))
         _run(connection, "COMMIT")
+        connection.close()
+
+
+@pytest.mark.integration
+def test_cloud_postgres_review_queue_round_trip() -> None:
+    load_dotenv()
+    if os.getenv("RUN_POSTGRES_INTEGRATION") != "1":
+        pytest.skip("Set RUN_POSTGRES_INTEGRATION=1 to run the live integration test")
+    if not os.getenv("DATABASE_URL"):
+        pytest.skip("Requires DATABASE_URL for cloud PostgreSQL integration")
+
+    repository = f"perchly-queue-test/{uuid.uuid4().hex}"
+    service = ReviewQueueService()
+    connection = _cloud_postgres_connection()
+    queue_id: int | None = None
+    try:
+        queue_id = service._enqueue(
+            delivery_id=f"delivery-{uuid.uuid4().hex}",
+            repository=repository,
+            pr_number=17,
+            head_sha="queue-head",
+            review_payload={"review": {"findings": []}, "diff": "test diff"},
+            specialist_failures={"security": "timeout"},
+            reason="specialist_failure",
+        )
+        duplicate_id = service._enqueue(
+            delivery_id=f"delivery-retry-{uuid.uuid4().hex}",
+            repository=repository,
+            pr_number=17,
+            head_sha="queue-head",
+            review_payload={"review": {"findings": ["retry"]}},
+            specialist_failures={},
+            reason="retry",
+        )
+        assert duplicate_id == queue_id
+
+        tables = _run(
+            connection,
+            """
+            SELECT table_name
+            FROM information_schema.tables
+            WHERE table_schema = 'public' AND table_name = ANY(%s)
+            ORDER BY table_name
+            """,
+            (["review_queue", "review_decisions"],),
+        )
+        assert [row[0] for row in tables] == ["review_decisions", "review_queue"]
+
+        stored = _run(
+            connection,
+            """
+            SELECT status, review_payload_json, specialist_failures_json, reason
+            FROM review_queue WHERE id = %s
+            """,
+            (queue_id,),
+        )
+        assert stored[0][0] == "pending"
+        assert stored[0][1]["diff"] == "test diff"
+        assert stored[0][2]["security"] == "timeout"
+        assert stored[0][3] == "specialist_failure"
+
+        decision_id = service._record_decision(
+            queue_item_id=queue_id,
+            decision="edit",
+            reviewer="reviewer@example.com",
+            edited_review={"findings": []},
+            comment="Reviewed",
+        )
+        assert decision_id > 0
+        assert _run(
+            connection,
+            "SELECT status, resolved_by FROM review_queue WHERE id = %s",
+            (queue_id,),
+        )[0] == ["edited", "reviewer@example.com"]
+        with pytest.raises(RuntimeError, match="already resolved"):
+            service._record_decision(
+                queue_item_id=queue_id,
+                decision="approve",
+                reviewer="second-reviewer@example.com",
+            )
+    finally:
+        if queue_id is not None:
+            _run(connection, "DELETE FROM review_queue WHERE id = %s", (queue_id,))
+            _run(connection, "COMMIT")
         connection.close()

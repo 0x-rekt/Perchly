@@ -22,7 +22,16 @@ DATABASE_URL=postgresql://user:password@host/dbname?sslmode=require
 # Optional retrieval settings
 GEMINI_EMBEDDING_MODEL=gemini-embedding-2
 EMBEDDING_DIMENSIONS=768
+PERCHLY_AUTO_POST_THRESHOLD=0.90
+PERCHLY_SECURITY_AUTO_POST_THRESHOLD=0.95
+PERCHLY_MAX_AUTO_POST_FINDINGS=20
 ```
+
+Findings are auto-posted only when all specialists succeed and every finding meets
+the configured confidence policy. Critical security findings, any specialist
+failure, and mixed-confidence reviews require approval. The approval queue is the
+next Phase 3 step; until it is connected, `NEEDS_APPROVAL` reviews are held without
+posting.
 
 The retrieval layer creates the `repositories`, `code_chunks`, `embeddings`, and
 `review_context` tables in cloud PostgreSQL on the first review. Each review fetches full text
@@ -35,6 +44,14 @@ must have the `vector` extension enabled. Historical chunks from previous PR hea
 SHAs remain searchable for now; this preserves useful context but can leave stale
 duplicate versions that rank highly. A later cleanup or version-selection policy is
 needed before treating the index as a long-lived repository source of truth.
+
+Reviews routed to `NEEDS_APPROVAL` are persisted in cloud PostgreSQL tables
+`review_queue` and `review_decisions`. Queue payloads retain the aggregated findings,
+specialist failures, PR metadata, diff, repository files, and retrieved contexts so
+approval can reconstruct the review without rerunning Gemini.
+Approval-required Temporal workflows wait durably for one of the `approve_review`,
+`reject_review`, or `edit_review` signals. Approved and edited reviews are posted
+after the signal; rejected reviews are recorded without posting.
 
 Run the Phase 0 automated checks:
 

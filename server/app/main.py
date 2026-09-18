@@ -5,6 +5,7 @@ from fastapi import FastAPI
 
 from app.core.logging import configure_logging
 from app.routers.github_webhooks import router as github_webhook_router
+from app.routers.reviews import router as reviews_router
 from app.temporal.client import close_temporal_client, initialize_temporal_client
 
 configure_logging()
@@ -28,6 +29,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(title="perchly PR Review Agent", lifespan=lifespan)
 app.include_router(github_webhook_router)
+app.include_router(reviews_router)
 
 
 @app.get("/")

@@ -11,6 +11,8 @@ from app.services.github_api import (
     review_comment_marker,
 )
 from app.services.retrieval import RetrievalService
+from app.services.routing import route_review
+from app.services.review_queue import ReviewQueueService
 from app.services.specialist_runner import SpecialistRunResult
 from app.agents import SPECIALIST_AGENTS
 from app.workers.review import format_aggregated_review_comment
@@ -115,6 +117,74 @@ async def aggregate_review(
 
 
 @activity.defn
+async def route_aggregated_review(review: dict[str, Any]) -> dict[str, Any]:
+    """Apply confidence and failure policy before any GitHub post."""
+    fetched = review["fetched"]
+    aggregated = review["review"]
+    decision = route_review(
+        findings=[_finding_result(finding) for finding in aggregated["findings"]],
+        failures=aggregated["failures"],
+        unresolved_errors=aggregated.get("unresolved_errors", []),
+    )
+    if decision.mode == "needs_approval":
+        queue_item_id = await ReviewQueueService().enqueue(
+            delivery_id=fetched["delivery_id"],
+            repository=fetched["repository"],
+            pr_number=fetched["pr_number"],
+            head_sha=fetched["head_sha"],
+            review_payload={
+                "review": aggregated,
+                "title": fetched["title"],
+                "description": fetched["description"],
+                "diff": fetched["diff"],
+                "repository_files": fetched["repository_files"],
+                "contexts": fetched.get("contexts", {}),
+            },
+            specialist_failures=aggregated["failures"],
+            reason=decision.reason,
+        )
+        return {"mode": decision.mode, "reason": decision.reason, "queue_item_id": queue_item_id}
+    return {"mode": decision.mode, "reason": decision.reason, "queue_item_id": None}
+
+
+@activity.defn
+async def persist_automatic_decision(payload: dict[str, Any]) -> int:
+    fetched = payload["fetched"]
+    return await ReviewQueueService().record_automatic_decision(
+        delivery_id=fetched["delivery_id"],
+        repository=fetched["repository"],
+        pr_number=fetched["pr_number"],
+        head_sha=fetched["head_sha"],
+        review_payload=payload["review"],
+        reason=payload["reason"],
+    )
+
+
+@activity.defn
+async def persist_reviewer_decision(payload: dict[str, Any]) -> int:
+    return await ReviewQueueService().record_reviewer_decision(
+        queue_item_id=payload["queue_item_id"],
+        decision=payload["decision"],
+    )
+
+
+@activity.defn
+async def validate_edited_review(review: dict[str, Any]) -> dict[str, Any]:
+    """Validate an edited review before it is persisted or posted."""
+    if not isinstance(review, dict) or not isinstance(review.get("findings"), list):
+        raise ValueError("edited review must contain a findings list")
+    failures = review.get("failures", {})
+    if not isinstance(failures, dict):
+        raise ValueError("edited review failures must be an object")
+    return {
+        "findings": [finding.model_dump() for finding in (
+            _finding_result(payload) for payload in review["findings"]
+        )],
+        "failures": {str(key): str(value) for key, value in failures.items()},
+    }
+
+
+@activity.defn
 async def post_review(payload: dict[str, Any]) -> bool:
     """Render and post the aggregated review through GitHub."""
     review = payload["review"]
@@ -158,6 +228,12 @@ def _review_result(payload: dict[str, Any]):
     from app.schemas.findings import ReviewResult
 
     return ReviewResult.model_validate(payload)
+
+
+def _finding_result(payload: dict[str, Any]):
+    from app.schemas.findings import Finding
+
+    return Finding.model_validate(payload)
 
 
 def _aggregated_review(payload: dict[str, Any]):
