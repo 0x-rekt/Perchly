@@ -50,6 +50,9 @@ def test_webhook_starts_temporal_workflow(monkeypatch) -> None:
     monkeypatch.setattr(github_webhooks, "GITHUB_WEBHOOK_SECRET", secret)
     monkeypatch.setattr(github_webhooks, "valid_github_signature", lambda **kwargs: True)
     monkeypatch.setattr(github_webhooks, "start_review_workflow", fake_start)
+    # Keep this unit test independent of the local idempotency database, which
+    # may contain the same fixture delivery from an earlier test run.
+    monkeypatch.setattr(github_webhooks.idempotency_store, "claim", lambda **kwargs: True)
 
     result = asyncio.run(github_webhooks.receive_github_events(
         request,
