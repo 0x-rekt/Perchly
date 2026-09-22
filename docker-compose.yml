@@ -72,7 +72,7 @@ services:
     restart: unless-stopped
     command:
       - "http"
-      - "--domain=special-oriole-remotely.ngrok-free.app"
+      - "--url=${NGROK_DOMAIN:-special-oriole-remotely.ngrok-free.app}"
       - "server:8000"
     env_file:
       - path: ./.env
