@@ -172,19 +172,19 @@ class ReviewWorkflow:
                         edited_review=edited_review,
                         comment=decision.comment,
                     )
-                await workflow.execute_activity(
-                    persist_reviewer_decision,
-                    {
-                        "queue_item_id": routing["queue_item_id"],
-                        "decision": asdict(decision),
-                        "repository": input.repository,
-                        "pr_number": input.pr_number,
-                        "head_sha": input.head_sha,
-                    },
-                    start_to_close_timeout=_ACTIVITY_TIMEOUT,
-                    retry_policy=_RETRY_POLICY,
-                )
                 if decision.decision == "reject":
+                    await workflow.execute_activity(
+                        persist_reviewer_decision,
+                        {
+                            "queue_item_id": routing["queue_item_id"],
+                            "decision": asdict(decision),
+                            "repository": input.repository,
+                            "pr_number": input.pr_number,
+                            "head_sha": input.head_sha,
+                        },
+                        start_to_close_timeout=_ACTIVITY_TIMEOUT,
+                        retry_policy=_RETRY_POLICY,
+                    )
                     self.state = "completed"
                     return ReviewWorkflowResult(
                         delivery_id=input.delivery_id,
@@ -201,6 +201,22 @@ class ReviewWorkflow:
                         "review": review_to_post,
                         "fetched": fetched,
                         "diff_characters": len(fetched["diff"]),
+                    },
+                    start_to_close_timeout=_ACTIVITY_TIMEOUT,
+                    retry_policy=_RETRY_POLICY,
+                )
+                # Resolve the queue only after GitHub confirms the comment was
+                # posted. If posting fails, the item remains pending and can be
+                # retried instead of disappearing as an approved-but-unposted
+                # review.
+                await workflow.execute_activity(
+                    persist_reviewer_decision,
+                    {
+                        "queue_item_id": routing["queue_item_id"],
+                        "decision": asdict(decision),
+                        "repository": input.repository,
+                        "pr_number": input.pr_number,
+                        "head_sha": input.head_sha,
                     },
                     start_to_close_timeout=_ACTIVITY_TIMEOUT,
                     retry_policy=_RETRY_POLICY,
