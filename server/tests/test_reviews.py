@@ -5,6 +5,7 @@ from fastapi import HTTPException
 
 import app.routers.reviews as reviews
 from app.schemas.reviews import ReviewDecisionRequest
+from app.services.review_queue import _queue_item
 
 
 class FakeQueue:
@@ -64,3 +65,12 @@ def test_resolved_item_is_rejected(monkeypatch) -> None:
         )
 
     assert error.value.status_code == 409
+
+
+def test_queue_item_accepts_rows_from_older_schema() -> None:
+    item = _queue_item([1, "delivery", "owner/repo", 3, "sha", {}, {}, "pending", "review"])
+
+    assert item["id"] == 1
+    assert item["status"] == "pending"
+    assert item["resolved_at"] is None
+    assert item["resolved_by"] is None

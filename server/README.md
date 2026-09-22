@@ -25,7 +25,20 @@ EMBEDDING_DIMENSIONS=768
 PERCHLY_AUTO_POST_THRESHOLD=0.90
 PERCHLY_SECURITY_AUTO_POST_THRESHOLD=0.95
 PERCHLY_MAX_AUTO_POST_FINDINGS=20
+# Optional OpenTelemetry console exporter for local tracing diagnostics.
+# Keep disabled in production unless logs are protected from source-code data.
+PERCHLY_OTEL_CONSOLE_EXPORT=false
+# Required to access /observability/*
+PERCHLY_OBSERVABILITY_API_KEY=replace-with-a-long-random-value
+# Optional OTLP/HTTP collector endpoint, e.g. Grafana Tempo or Jaeger
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318/v1/traces
 ```
+
+Perchly creates OpenTelemetry spans for Temporal activities, Gemini generation,
+and Gemini embedding calls. The SDK spans carry review, repository, agent,
+phase, model, token, and error attributes; the PostgreSQL `agent_spans` table
+remains the queryable dashboard sink. Set `PERCHLY_OTEL_CONSOLE_EXPORT=true`
+locally to print completed SDK spans while debugging instrumentation.
 
 Findings are auto-posted only when all specialists succeed and every finding meets
 the configured confidence policy. Critical security findings, any specialist

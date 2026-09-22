@@ -15,8 +15,19 @@ configure_logging()
 logger = logging.getLogger(__name__)
 
 
+async def _aggregate_refresh_loop() -> None:
+    """Keep the dashboard aggregate current without blocking the API loop."""
+    while True:
+        await asyncio.sleep(300)
+        try:
+            await asyncio.to_thread(telemetry.refresh_aggregates)
+        except Exception:
+            logger.warning("Telemetry aggregate refresh failed", exc_info=True)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    aggregate_task: asyncio.Task[None] | None = None
     try:
         await initialize_temporal_client()
     except Exception:
@@ -26,11 +37,16 @@ async def lifespan(_: FastAPI):
         logger.warning("Temporal unavailable during startup; review enqueueing is disabled", exc_info=True)
     try:
         await asyncio.to_thread(telemetry.initialize_schema)
+        await asyncio.to_thread(telemetry.refresh_aggregates)
+        aggregate_task = asyncio.create_task(_aggregate_refresh_loop())
     except Exception:
         logger.warning("Telemetry schema initialisation failed; spans will not be persisted", exc_info=True)
     try:
         yield
     finally:
+        if aggregate_task is not None:
+            aggregate_task.cancel()
+            await asyncio.gather(aggregate_task, return_exceptions=True)
         await close_temporal_client()
 
 

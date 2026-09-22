@@ -10,6 +10,7 @@ import httpx
 import jwt
 
 from app.core.config import GITHUB_API_URL
+from app.services.telemetry import otel_span
 
 
 class GitHubApiError(RuntimeError):
@@ -60,16 +61,26 @@ class GitHubAppClient:
         if headers:
             request_headers.update(headers)
 
-        async with httpx.AsyncClient(base_url=GITHUB_API_URL, timeout=30.0) as client:
-            response = await client.request(
-                method, path, headers=request_headers, json=json
-            )
+        with otel_span(
+            "perchly.tool.github_api",
+            attributes={
+                "perchly.span_type": "tool_call",
+                "http.request.method": method,
+                "http.request.path": path.split("?", 1)[0],
+                "server.address": GITHUB_API_URL,
+            },
+        ) as span:
+            async with httpx.AsyncClient(base_url=GITHUB_API_URL, timeout=30.0) as client:
+                response = await client.request(
+                    method, path, headers=request_headers, json=json
+                )
+            span.set_attribute("http.response.status_code", response.status_code)
 
-        if response.is_error:
-            raise GitHubApiError(
-                f"GitHub API {method} {path} failed with status {response.status_code}"
-            )
-        return response
+            if response.is_error:
+                raise GitHubApiError(
+                    f"GitHub API {method} {path} failed with status {response.status_code}"
+                )
+            return response
 
     async def installation_token(self, installation_id: int) -> str:
         response = await self._request(

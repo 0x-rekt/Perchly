@@ -1,8 +1,10 @@
 from app.services.retrieval import (
     SPECIALIST_QUERIES,
+    _is_stale_session,
     chunk_changed_files,
     chunk_file_content,
 )
+from pg8000.exceptions import DatabaseError
 
 
 def test_chunk_changed_files_tracks_new_file_lines_and_paths() -> None:
@@ -50,3 +52,9 @@ def test_chunk_file_content_preserves_full_file_line_ranges() -> None:
     assert chunks[0].line_start == 1
     assert chunks[0].line_end == 3
     assert chunks[0].content == "line one\nline two\nline three"
+
+
+def test_neon_prepared_statement_error_is_retryable() -> None:
+    error = DatabaseError({"C": "26000", "M": "unnamed prepared statement does not exist"})
+
+    assert _is_stale_session(error) is True

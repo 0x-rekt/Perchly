@@ -1493,6 +1493,34 @@ textarea {
   padding: 8px;
 }
 
+.trace-filters {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.trace-filters input,
+.trace-filters button {
+  min-height: 32px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  color: inherit;
+  padding: 6px 8px;
+  font: inherit;
+}
+
+.trace-filters button {
+  cursor: pointer;
+}
+
+.trace-filters button[type="submit"] {
+  background: var(--lime);
+  color: var(--ink);
+  border-color: transparent;
+}
+
 .run-state {
   width: 7px;
   height: 7px;

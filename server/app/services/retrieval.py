@@ -23,7 +23,7 @@ from app.core.config import (
 from app.core.pricing import calculate_cost
 from app.schemas.findings import FindingCategory
 from app.services.github_api import RepositoryFile
-from app.services.telemetry import ReviewContext
+from app.services.telemetry import ReviewContext, otel_span
 
 logger = logging.getLogger(__name__)
 
@@ -168,12 +168,42 @@ class RetrievalService:
         chunks: list[CodeChunk],
         telemetry_ctx: ReviewContext | None = None,
     ) -> dict[FindingCategory, str]:
+        with otel_span(
+            "perchly.tool.retrieval_database",
+            attributes={
+                "perchly.review_run_id": telemetry_ctx.review_run_id if telemetry_ctx else "",
+                "perchly.repository": repository,
+                "perchly.head_sha": head_sha,
+                "perchly.phase": "retrieval",
+                "perchly.span_type": "tool_call",
+                "perchly.retrieval.chunk_count": len(chunks),
+            },
+        ):
+            return self._build_contexts_operation(
+                repository=repository,
+                head_sha=head_sha,
+                chunks=chunks,
+                telemetry_ctx=telemetry_ctx,
+            )
+
+    def _build_contexts_operation(
+        self,
+        *,
+        repository: str,
+        head_sha: str,
+        chunks: list[CodeChunk],
+        telemetry_ctx: ReviewContext | None = None,
+    ) -> dict[FindingCategory, str]:
         from pgvector.pg8000 import register_vector
 
         client = genai.Client(api_key=gemini_api_key())
         embeddings = _embed(client, [chunk.content for chunk in chunks], telemetry_ctx=telemetry_ctx)
 
-        for attempt in range(2):
+        # Neon transaction-pooler sessions can recycle an unnamed prepared
+        # statement between commands (SQLSTATE 26000). A fresh connection is
+        # required; allow a few attempts because the pooler can hand out more
+        # than one stale backend in succession.
+        for attempt in range(3):
             connection = _connect()
             try:
                 register_vector(connection)
@@ -199,13 +229,14 @@ class RetrievalService:
                 _run(connection, "COMMIT")
                 return contexts
             except Exception as exc:
-                if attempt == 1 or not _is_stale_session(exc):
+                if attempt == 2 or not _is_stale_session(exc):
                     raise
                 logger.warning(
                     "db session recycled during retrieval, reconnecting (attempt %d): %s",
                     attempt + 1,
                     exc,
                 )
+                time.sleep(0.15 * (attempt + 1))
             finally:
                 connection.close()
         return {}  # unreachable
@@ -253,11 +284,30 @@ def _embed(
     for content in contents:
         t0 = time.monotonic()
         try:
-            response = client.models.embed_content(
-                model=GEMINI_EMBEDDING_MODEL,
-                contents=content,
-                config=types.EmbedContentConfig(output_dimensionality=EMBEDDING_DIMENSIONS),
-            )
+            with otel_span(
+                "perchly.llm.embed_content",
+                attributes={
+                    "perchly.review_run_id": ctx.review_run_id,
+                    "perchly.repository": ctx.repository,
+                    "perchly.pr_number": ctx.pr_number,
+                    "perchly.head_sha": ctx.head_sha,
+                    "perchly.agent": ctx.agent,
+                    "perchly.phase": "retrieval",
+                    "perchly.span_type": "llm_call",
+                    "gen_ai.system": "gemini",
+                    "gen_ai.request.model": GEMINI_EMBEDDING_MODEL,
+                },
+            ) as otel:
+                response = client.models.embed_content(
+                    model=GEMINI_EMBEDDING_MODEL,
+                    contents=content,
+                    config=types.EmbedContentConfig(output_dimensionality=EMBEDDING_DIMENSIONS),
+                )
+                usage = getattr(response, "usage_metadata", None)
+                otel.set_attribute(
+                    "gen_ai.usage.input_tokens",
+                    getattr(usage, "prompt_token_count", 0) or 0,
+                )
         except Exception as exc:
             _emit_embedding_span(
                 ctx,

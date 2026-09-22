@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   EmptyState,
   PageHeading,
@@ -6,7 +6,7 @@ import {
   SkeletonPanel,
   StatusPill,
 } from "../ui/DashboardChrome";
-import { getTrace, getTraces } from "../../lib/api";
+import { getTrace, getTraces, type TraceFilters } from "../../lib/api";
 import { Activity, GitPullRequest } from "../../lib/icons";
 import {
   formatDateTime,
@@ -22,7 +22,11 @@ export function ReviewRuns({
 }: {
   onLiveChange: (live: boolean) => void;
 }) {
-  const surface = useSurface<TracesResponse>(getTraces);
+  const [draftFilters, setDraftFilters] = useState<TraceFilters>({});
+  const [filters, setFilters] = useState<TraceFilters>({});
+  const firstFilterRender = useRef(true);
+  const loadTraces = useCallback(() => getTraces(filters), [filters]);
+  const surface = useSurface<TracesResponse>(loadTraces);
   const { data, error, loading, reload } = surface;
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [detailState, setDetailState] = useState<{
@@ -46,6 +50,14 @@ export function ReviewRuns({
     window.addEventListener("perchly:refresh", onRefresh);
     return () => window.removeEventListener("perchly:refresh", onRefresh);
   }, [reload]);
+
+  useEffect(() => {
+    if (firstFilterRender.current) {
+      firstFilterRender.current = false;
+      return;
+    }
+    reload();
+  }, [filters, reload]);
 
   useEffect(() => {
     if (!activeId) return;
@@ -92,6 +104,47 @@ export function ReviewRuns({
       <div className="runs-grid">
       <aside className="queue-panel" aria-label="Review runs">
         <PanelHeading title="Review runs" meta="Newest first" />
+        <form
+          className="trace-filters"
+          onSubmit={(event) => {
+            event.preventDefault();
+            setFilters({
+              repository: draftFilters.repository?.trim() || undefined,
+              agent: draftFilters.agent?.trim() || undefined,
+              prNumber: draftFilters.prNumber || undefined,
+              headSha: draftFilters.headSha?.trim() || undefined,
+            });
+          }}
+        >
+          <input
+            aria-label="Repository"
+            placeholder="owner/repository"
+            value={draftFilters.repository ?? ""}
+            onChange={(event) => setDraftFilters({ ...draftFilters, repository: event.target.value })}
+          />
+          <input
+            aria-label="PR number"
+            placeholder="PR number"
+            type="number"
+            min="1"
+            value={draftFilters.prNumber ?? ""}
+            onChange={(event) => setDraftFilters({ ...draftFilters, prNumber: event.target.value ? Number(event.target.value) : undefined })}
+          />
+          <input
+            aria-label="Agent"
+            placeholder="agent (security)"
+            value={draftFilters.agent ?? ""}
+            onChange={(event) => setDraftFilters({ ...draftFilters, agent: event.target.value })}
+          />
+          <input
+            aria-label="Head SHA"
+            placeholder="head SHA"
+            value={draftFilters.headSha ?? ""}
+            onChange={(event) => setDraftFilters({ ...draftFilters, headSha: event.target.value })}
+          />
+          <button type="submit">Apply filters</button>
+          <button type="button" onClick={() => { setDraftFilters({}); setFilters({}); }}>Clear</button>
+        </form>
         {loading && !data ? (
           <SkeletonPanel rows={6} />
         ) : error && !data ? (

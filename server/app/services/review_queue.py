@@ -305,7 +305,13 @@ def _queue_item(row: list[Any]) -> dict[str, Any]:
         "review_payload", "specialist_failures", "status", "reason",
         "created_at", "updated_at", "resolved_at", "resolved_by",
     )
-    return dict(zip(fields, row, strict=True))
+    # Older queue rows/databases may not include the nullable resolution
+    # columns. Keep reads backward-compatible while the schema initializer
+    # upgrades the table for future writes.
+    values = list(row)
+    if len(values) < len(fields):
+        values.extend([None] * (len(fields) - len(values)))
+    return dict(zip(fields, values, strict=False))
 
 
 def _initialize_schema(connection) -> None:

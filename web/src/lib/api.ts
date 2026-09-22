@@ -7,6 +7,7 @@ import type {
 } from "../types";
 
 const API = import.meta.env.VITE_API_URL ?? "";
+const OBSERVABILITY_KEY = import.meta.env.VITE_OBSERVABILITY_API_KEY;
 
 async function request<T>(
   path: string,
@@ -16,6 +17,7 @@ async function request<T>(
     method: init?.method ?? "GET",
     headers: {
       Accept: "application/json",
+      ...(OBSERVABILITY_KEY ? { "X-API-Key": OBSERVABILITY_KEY } : {}),
       ...(init?.body !== undefined ? { "Content-Type": "application/json" } : {}),
     },
     body:
@@ -42,8 +44,21 @@ export function getOverview(days = 14): Promise<OverviewMetrics> {
   return request<OverviewMetrics>(`/observability/overview?days=${days}`);
 }
 
-export function getTraces(): Promise<TracesResponse> {
-  return request<TracesResponse>("/observability/traces");
+export type TraceFilters = {
+  repository?: string;
+  agent?: string;
+  prNumber?: number;
+  headSha?: string;
+};
+
+export function getTraces(filters: TraceFilters = {}): Promise<TracesResponse> {
+  const params = new URLSearchParams();
+  if (filters.repository) params.set("repository", filters.repository);
+  if (filters.agent) params.set("agent", filters.agent);
+  if (filters.prNumber) params.set("pr_number", String(filters.prNumber));
+  if (filters.headSha) params.set("head_sha", filters.headSha);
+  const query = params.toString();
+  return request<TracesResponse>(`/observability/traces${query ? `?${query}` : ""}`);
 }
 
 export function getTrace(reviewRunId: string): Promise<TraceDetail> {
