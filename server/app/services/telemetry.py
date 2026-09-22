@@ -3,19 +3,94 @@
 import asyncio
 import functools
 import logging
+import os
+import re
 import ssl
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 from typing import Any, Callable, TypeVar
 from urllib.parse import unquote, urlparse
 
-from app.core.config import database_url
+from opentelemetry import trace
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import ConsoleSpanExporter, SimpleSpanProcessor
+from opentelemetry.trace import Status, StatusCode
+
+from app.core.config import OTEL_EXPORTER_OTLP_ENDPOINT, database_url
 from pg8000.exceptions import DatabaseError as PGDatabaseError
 from pg8000.exceptions import InterfaceError as PGInterfaceError
 
 logger = logging.getLogger(__name__)
+
+
+def _build_tracer() -> trace.Tracer:
+    """Create the process tracer once, with an opt-in local exporter.
+
+    The database writer below remains the product's queryable sink. The SDK
+    tracer is deliberately independent of it, so a telemetry database outage
+    cannot prevent an OpenTelemetry span from being created. Console export is
+    useful during local development and disabled by default to avoid leaking
+    source snippets into logs.
+    """
+    provider = TracerProvider(
+        resource=Resource.create({"service.name": "perchly", "service.version": "0.1.0"})
+    )
+    if OTEL_EXPORTER_OTLP_ENDPOINT:
+        try:
+            from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+
+            provider.add_span_processor(
+                SimpleSpanProcessor(OTLPSpanExporter(endpoint=OTEL_EXPORTER_OTLP_ENDPOINT))
+            )
+        except Exception:
+            logger.warning("OTLP exporter could not be configured", exc_info=True)
+    if os.getenv("PERCHLY_OTEL_CONSOLE_EXPORT", "").lower() in {"1", "true", "yes"}:
+        provider.add_span_processor(SimpleSpanProcessor(ConsoleSpanExporter()))
+    try:
+        trace.set_tracer_provider(provider)
+    except Exception:
+        # Test reloaders and embedded workers may initialize the global provider
+        # more than once. Reuse the SDK's already-installed provider in that case.
+        pass
+    return trace.get_tracer("perchly")
+
+
+_TRACER = _build_tracer()
+_SENSITIVE_VALUE = re.compile(
+    r"(?i)(api[_-]?key|secret|token|password|private[_-]?key)"
+    r"(\s*[:=]\s*)([\"']?)([^\s,;\"']+)\3"
+)
+
+
+def _redact_summary(value: str | None) -> str | None:
+    """Keep useful telemetry context without persisting credential values."""
+    if value is None:
+        return None
+    redacted = _SENSITIVE_VALUE.sub(r"\1\2\3[REDACTED]\3", value)
+    redacted = re.sub(r"-----BEGIN [^-]+-----.*?-----END [^-]+-----", "[REDACTED PEM]", redacted, flags=re.S)
+    return redacted[:500]
+
+
+@contextmanager
+def otel_span(name: str, *, attributes: dict[str, Any] | None = None):
+    """Create an OpenTelemetry span and mark exceptions consistently."""
+    with _TRACER.start_as_current_span(name) as span:
+        if attributes:
+            for key, value in attributes.items():
+                if value is not None:
+                    span.set_attribute(key, value)
+        try:
+            yield span
+        except Exception as exc:
+            span.record_exception(exc)
+            span.set_status(Status(StatusCode.ERROR, str(exc)))
+            raise
+        else:
+            span.set_status(Status(StatusCode.OK))
 
 F = TypeVar("F", bound=Callable[..., Any])
 
@@ -75,7 +150,7 @@ def emit_span(
                 review_run_id, repository, pr_number, head_sha,
                 agent, phase, span_type, model,
                 tokens_in, tokens_out, str(cost), latency_ms,
-                input_summary, output_summary,
+                _redact_summary(input_summary), _redact_summary(output_summary),
                 status, error_message,
             ),
         )
@@ -210,8 +285,19 @@ def overview_metrics(days: int = 14) -> dict[str, Any]:
             except Exception:
                 return []
 
+        aggregate_per_day = safe(
+            """
+            SELECT day::date AS day, COALESCE(sum(total_reviews), 0)::integer AS reviews
+            FROM daily_review_metrics
+            WHERE day >= CURRENT_TIMESTAMP - (%s * INTERVAL '1 day')
+            GROUP BY day::date
+            ORDER BY day::date
+            """,
+            (days,),
+        )
         per_day_rows.append(
-            safe(
+            aggregate_per_day
+            or safe(
                 """
                 SELECT created_at::date AS day, count(DISTINCT review_run_id) AS reviews
                 FROM agent_spans
@@ -222,8 +308,16 @@ def overview_metrics(days: int = 14) -> dict[str, Any]:
                 (days,),
             )
         )
+        aggregate_cost = safe(
+            """
+            SELECT COALESCE(sum(total_cost), 0), COALESCE(sum(total_reviews), 0)::integer
+            FROM daily_review_metrics
+            WHERE day >= CURRENT_TIMESTAMP - (7 * INTERVAL '1 day')
+            """
+        )
         cost_rows.append(
-            safe(
+            aggregate_cost
+            or safe(
                 """
                 SELECT COALESCE(sum(cost_usd), 0), count(DISTINCT review_run_id)
                 FROM agent_spans
@@ -231,8 +325,21 @@ def overview_metrics(days: int = 14) -> dict[str, Any]:
                 """
             )
         )
+        aggregate_latency = safe(
+            """
+            SELECT phase, sum(span_count)::integer,
+                   percentile_cont(0.50) WITHIN GROUP (ORDER BY p50_latency_ms),
+                   percentile_cont(0.95) WITHIN GROUP (ORDER BY p95_latency_ms),
+                   sum(failures)::integer
+            FROM phase_daily_metrics
+            WHERE day >= CURRENT_TIMESTAMP - (7 * INTERVAL '1 day')
+            GROUP BY phase
+            ORDER BY 4 DESC
+            """
+        )
         latency_rows.append(
-            safe(
+            aggregate_latency
+            or safe(
                 """
                 SELECT phase, count(*),
                        percentile_cont(0.5) WITHIN GROUP (ORDER BY latency_ms),
@@ -360,6 +467,8 @@ def list_traces(
     *,
     repository: str | None = None,
     agent: str | None = None,
+    pr_number: int | None = None,
+    head_sha: str | None = None,
     since: datetime | None = None,
     until: datetime | None = None,
     limit: int = 50,
@@ -373,6 +482,12 @@ def list_traces(
     if agent:
         conditions.append("s.agent = %s")
         params.append(agent)
+    if pr_number is not None:
+        conditions.append("s.pr_number = %s")
+        params.append(pr_number)
+    if head_sha:
+        conditions.append("s.head_sha = %s")
+        params.append(head_sha)
     if since:
         conditions.append("s.created_at >= %s")
         params.append(since)
@@ -484,22 +599,49 @@ def _trace_summary(row: list[Any]) -> dict[str, Any]:
 
 
 def refresh_aggregates() -> None:
-    """Refresh the daily_review_metrics materialized view.
-
-    PostgreSQL refuses concurrent refreshes on a materialized view that has no
-    rows yet (the schema creates it ``WITH NO DATA``), so the first refresh is
-    always non-concurrent.
-    """
+    """Refresh the Timescale aggregate or PostgreSQL materialized-view fallback."""
 
     def operation(conn) -> None:
-        rows = _run(conn, "SELECT count(*) FROM daily_review_metrics")
-        is_empty = not rows or int(rows[0][0]) == 0
-        if is_empty:
-            _run(conn, "REFRESH MATERIALIZED VIEW daily_review_metrics")
-        else:
-            _run(conn, "REFRESH MATERIALIZED VIEW CONCURRENTLY daily_review_metrics")
+        for view in ("daily_review_metrics", "phase_daily_metrics"):
+            if _is_continuous_aggregate(conn, view):
+                _run(
+                    conn,
+                    f"CALL refresh_continuous_aggregate('{view}', NULL, NULL)",
+                )
+                continue
+            try:
+                rows = _run(conn, f"SELECT count(*) FROM {view}")
+                is_empty = not rows or int(rows[0][0]) == 0
+            except Exception:
+                # A WITH NO DATA materialized view cannot be scanned until its
+                # first refresh. Treat that state as empty.
+                is_empty = True
+            if is_empty:
+                _run(conn, f"REFRESH MATERIALIZED VIEW {view}")
+            else:
+                _run(conn, f"REFRESH MATERIALIZED VIEW CONCURRENTLY {view}")
 
-    _execute(operation)
+    # Materialized-view refreshes can scan a large span history and exceed the
+    # short request timeout used by ordinary telemetry reads/writes.
+    _execute(operation, timeout=120)
+
+
+def _is_continuous_aggregate(conn, view_name: str) -> bool:
+    """Return whether the metrics view is registered as a Timescale aggregate."""
+    try:
+        rows = _run(
+            conn,
+            """
+            SELECT 1
+            FROM timescaledb_information.continuous_aggregates
+            WHERE view_name = %s
+            LIMIT 1
+            """,
+            (view_name,),
+        )
+        return bool(rows)
+    except Exception:
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -559,10 +701,34 @@ def _instrument_activity(fn: F, *, phase: str) -> F:
     async def wrapper(*args: Any, **kwargs: Any) -> Any:
         ctx = _extract_activity_context(args, default_agent=fn.__name__)
         t0 = time.monotonic()
+        attrs = {
+            "perchly.review_run_id": ctx["review_run_id"],
+            "perchly.repository": ctx["repository"],
+            "perchly.pr_number": ctx["pr_number"],
+            "perchly.head_sha": ctx["head_sha"],
+            "perchly.agent": ctx["agent"],
+            "perchly.phase": phase,
+            "perchly.span_type": "activity",
+        }
+        with otel_span(f"perchly.activity.{phase}", attributes=attrs):
+            try:
+                result = await fn(*args, **kwargs)
+            except Exception as exc:
+                latency_ms = int((time.monotonic() - t0) * 1000)
+                await _silent_emit(
+                    review_run_id=ctx["review_run_id"],
+                    repository=ctx["repository"],
+                    pr_number=ctx["pr_number"],
+                    head_sha=ctx["head_sha"],
+                    agent=ctx["agent"],
+                    phase=phase,
+                    span_type="activity",
+                    latency_ms=latency_ms,
+                    status="failed",
+                    error_message=f"{type(exc).__name__}: {exc}",
+                )
+                raise
 
-        try:
-            result = await fn(*args, **kwargs)
-        except Exception as exc:
             latency_ms = int((time.monotonic() - t0) * 1000)
             await _silent_emit(
                 review_run_id=ctx["review_run_id"],
@@ -573,24 +739,9 @@ def _instrument_activity(fn: F, *, phase: str) -> F:
                 phase=phase,
                 span_type="activity",
                 latency_ms=latency_ms,
-                status="failed",
-                error_message=f"{type(exc).__name__}: {exc}",
+                status="success",
             )
-            raise
-
-        latency_ms = int((time.monotonic() - t0) * 1000)
-        await _silent_emit(
-            review_run_id=ctx["review_run_id"],
-            repository=ctx["repository"],
-            pr_number=ctx["pr_number"],
-            head_sha=ctx["head_sha"],
-            agent=ctx["agent"],
-            phase=phase,
-            span_type="activity",
-            latency_ms=latency_ms,
-            status="success",
-        )
-        return result
+            return result
 
     return wrapper  # type: ignore[return-value]
 
@@ -658,18 +809,26 @@ def initialize_schema() -> None:
 
     def operation(conn) -> None:
         _migrate_drop_old_schema(conn)
-        _ensure_timescaledb(conn)
+        timescaledb_available = _ensure_timescaledb(conn)
         _create_agent_spans(conn)
         _create_hypertable(conn)
         _create_indexes(conn)
-        _create_daily_metrics_view(conn)
+        timescaledb_available = _create_daily_metrics_view(
+            conn, timescaledb_available=timescaledb_available
+        )
+        _create_phase_metrics_view(conn, timescaledb_available=timescaledb_available)
 
     _execute(operation)
 
 
 def _migrate_drop_old_schema(conn) -> None:
     """Drop objects from previous incorrect schema versions."""
-    for view in ("agent_spans_hourly", "agent_spans_daily", "daily_review_metrics"):
+    for view in (
+        "agent_spans_hourly",
+        "agent_spans_daily",
+        "daily_review_metrics",
+        "phase_daily_metrics",
+    ):
         _run(conn, f"DROP MATERIALIZED VIEW IF EXISTS {view} CASCADE")
 
     # Drop agent_spans only if it has the old incorrect layout.
@@ -685,11 +844,13 @@ def _migrate_drop_old_schema(conn) -> None:
         _run(conn, "DROP TABLE IF EXISTS agent_spans CASCADE")
 
 
-def _ensure_timescaledb(conn) -> None:
+def _ensure_timescaledb(conn) -> bool:
     try:
         _run(conn, "CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE")
+        return True
     except Exception:
         logger.warning("timescaledb unavailable; agent_spans will remain a plain table")
+        return False
 
 
 def _create_agent_spans(conn) -> None:
@@ -742,38 +903,97 @@ def _create_indexes(conn) -> None:
         _run(conn, ddl)
 
 
-def _create_daily_metrics_view(conn) -> None:
-    """Plain materialized view equivalent to the spec continuous aggregate.
-
-    Continuous aggregates require the TimescaleDB community license which is
-    unavailable on the current cloud instance. This view uses time_bucket()
-    (Apache-licensed) and is refreshed on demand via refresh_aggregates().
-    """
-    _run(
-        conn,
-        """
-        CREATE MATERIALIZED VIEW IF NOT EXISTS daily_review_metrics AS
-        SELECT
-            time_bucket('1 day', created_at)            AS day,
-            repository,
-            count(DISTINCT review_run_id)               AS total_reviews,
-            sum(cost_usd)                               AS total_cost,
-            sum(cost_usd) / NULLIF(count(DISTINCT review_run_id), 0)
-                                                        AS avg_cost_per_review,
-            percentile_cont(0.50) WITHIN GROUP (ORDER BY latency_ms)
-                                                        AS p50_latency_ms,
-            percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms)
-                                                        AS p95_latency_ms
-        FROM agent_spans
-        GROUP BY day, repository
-        WITH NO DATA
-        """,
+def _create_daily_metrics_view(conn, *, timescaledb_available: bool) -> bool:
+    """Create a Timescale continuous aggregate or PostgreSQL fallback."""
+    bucket_expression = (
+        "time_bucket('1 day', created_at)"
+        if timescaledb_available
+        else "date_trunc('day', created_at)"
     )
+    view_options = "WITH (timescaledb.continuous)" if timescaledb_available else ""
+    try:
+        _run(
+            conn,
+            f"""
+            CREATE MATERIALIZED VIEW IF NOT EXISTS daily_review_metrics
+            {view_options} AS
+            SELECT
+                {bucket_expression}                         AS day,
+                repository,
+                count(DISTINCT review_run_id)               AS total_reviews,
+                sum(cost_usd)                               AS total_cost,
+                sum(cost_usd) / NULLIF(count(DISTINCT review_run_id), 0)
+                                                            AS avg_cost_per_review,
+                percentile_cont(0.50) WITHIN GROUP (ORDER BY latency_ms)
+                                                            AS p50_latency_ms,
+                percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms)
+                                                            AS p95_latency_ms
+            FROM agent_spans
+            GROUP BY day, repository
+            WITH NO DATA
+            """,
+        )
+    except Exception:
+        if not timescaledb_available:
+            raise
+        logger.warning("Timescale continuous aggregate unavailable; using PostgreSQL materialized view")
+        _rollback_after_schema_error(conn)
+        return _create_daily_metrics_view(conn, timescaledb_available=False)
     _run(
         conn,
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_daily_metrics_pk "
         "ON daily_review_metrics (day, repository)",
     )
+    return timescaledb_available
+
+
+def _create_phase_metrics_view(conn, *, timescaledb_available: bool) -> bool:
+    """Create the phase-level aggregate used for p50/p95 dashboard metrics."""
+    bucket_expression = (
+        "time_bucket('1 day', created_at)"
+        if timescaledb_available
+        else "date_trunc('day', created_at)"
+    )
+    view_options = "WITH (timescaledb.continuous)" if timescaledb_available else ""
+    try:
+        _run(
+            conn,
+            f"""
+            CREATE MATERIALIZED VIEW IF NOT EXISTS phase_daily_metrics
+            {view_options} AS
+            SELECT
+                {bucket_expression} AS day,
+                phase,
+                count(*) AS span_count,
+                percentile_cont(0.50) WITHIN GROUP (ORDER BY latency_ms) AS p50_latency_ms,
+                percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms) AS p95_latency_ms,
+                count(*) FILTER (WHERE status = 'failed') AS failures
+            FROM agent_spans
+            WHERE phase <> ''
+            GROUP BY day, phase
+            WITH NO DATA
+            """,
+        )
+    except Exception:
+        if not timescaledb_available:
+            raise
+        logger.warning("Timescale phase aggregate unavailable; using PostgreSQL materialized view")
+        _rollback_after_schema_error(conn)
+        return _create_phase_metrics_view(conn, timescaledb_available=False)
+    _run(
+        conn,
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_phase_daily_metrics_pk "
+        "ON phase_daily_metrics (day, phase)",
+    )
+    return timescaledb_available
+
+
+def _rollback_after_schema_error(conn) -> None:
+    """Clear PostgreSQL's failed transaction before applying a fallback DDL."""
+    try:
+        _run(conn, "ROLLBACK")
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -781,7 +1001,7 @@ def _create_daily_metrics_view(conn) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _connect():
+def _connect(*, timeout: int = 10):
     from pg8000.native import Connection
 
     parsed = urlparse(database_url())
@@ -792,7 +1012,7 @@ def _connect():
         port=parsed.port or 5432,
         database=parsed.path.lstrip("/"),
         ssl_context=ssl.create_default_context(),
-        timeout=10,
+        timeout=timeout,
     )
 
 
@@ -810,7 +1030,7 @@ def _is_stale_session(exc: BaseException) -> bool:
     return False
 
 
-def _execute(operation: Callable[[Any], Any]) -> Any:
+def _execute(operation: Callable[[Any], Any], *, timeout: int = 10) -> Any:
     """Run one DB operation, retrying once with a fresh connection.
 
     Every operation uses its own short-lived connection, so the Neon
@@ -819,7 +1039,7 @@ def _execute(operation: Callable[[Any], Any]) -> Any:
     recovered simply by connecting again.
     """
     for attempt in range(2):
-        conn = _connect()
+        conn = _connect() if timeout == 10 else _connect(timeout=timeout)
         try:
             return operation(conn)
         except Exception as exc:
