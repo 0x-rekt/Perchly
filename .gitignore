@@ -1,2 +1,4 @@
+.env
 *.md
 !README.md
+*.pem

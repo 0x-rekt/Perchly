@@ -1,0 +1,83 @@
+services:
+  temporal:
+    image: temporalio/temporal:latest
+    container_name: perchly-temporal
+    restart: unless-stopped
+    command: ["server", "start-dev", "--ip", "0.0.0.0", "--ui-port", "8233"]
+    ports:
+      - "7233:7233"
+      - "8233:8233"
+
+  server:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    container_name: perchly-server
+    restart: unless-stopped
+    command: ["uv", "run", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "8000:8000"
+    env_file:
+      - path: ./server/.env
+        required: false
+      - path: ./.env
+        required: false
+    environment:
+      - TEMPORAL_ADDRESS=temporal:7233
+      - GITHUB_PRIVATE_KEY_PATH=/app/perchly.2026-09-12.private-key.pem
+      - PERCHLY_DATA_DIRECTORY=/app/data
+    volumes:
+      - ./server/data:/app/data
+      - ./server/perchly.2026-09-12.private-key.pem:/app/perchly.2026-09-12.private-key.pem:ro
+    depends_on:
+      - temporal
+
+  worker:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    container_name: perchly-worker
+    restart: unless-stopped
+    command: ["uv", "run", "python", "-m", "app.temporal.worker"]
+    env_file:
+      - path: ./server/.env
+        required: false
+      - path: ./.env
+        required: false
+    environment:
+      - TEMPORAL_ADDRESS=temporal:7233
+      - GITHUB_PRIVATE_KEY_PATH=/app/perchly.2026-09-12.private-key.pem
+      - PERCHLY_DATA_DIRECTORY=/app/data
+    volumes:
+      - ./server/data:/app/data
+      - ./server/perchly.2026-09-12.private-key.pem:/app/perchly.2026-09-12.private-key.pem:ro
+    depends_on:
+      - temporal
+      - server
+
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    container_name: perchly-web
+    restart: unless-stopped
+    ports:
+      - "5173:5173"
+    depends_on:
+      - server
+
+  ngrok:
+    image: ngrok/ngrok:latest
+    container_name: perchly-ngrok
+    restart: unless-stopped
+    command:
+      - "http"
+      - "--domain=special-oriole-remotely.ngrok-free.app"
+      - "server:8000"
+    env_file:
+      - path: ./.env
+        required: false
+      - path: ./server/.env
+        required: false
+    depends_on:
+      - server
