@@ -194,14 +194,26 @@ async def review_diff(
 ) -> ReviewResult:
     """Request a schema-constrained Gemini review without blocking the event loop."""
     ctx = telemetry_ctx or ReviewContext()
-    return await asyncio.to_thread(
-        _generate_review,
-        prompt=_review_prompt(
-            title=title,
-            description=description,
-            diff=diff,
-            specialist_instructions=specialist_instructions,
-        ),
-        telemetry_ctx=ctx,
-        model=GEMINI_MODEL,
+    prompt = _review_prompt(
+        title=title,
+        description=description,
+        diff=diff,
+        specialist_instructions=specialist_instructions,
     )
+    for attempt in range(2):
+        try:
+            return await asyncio.to_thread(
+                _generate_review,
+                prompt=prompt,
+                telemetry_ctx=ctx,
+                model=GEMINI_MODEL,
+            )
+        except GeminiReviewError as exc:
+            # Gemini can transiently return promptFeedback=OTHER with no
+            # candidates. A single retry avoids turning that transient response
+            # into a specialist failure while keeping the retry bounded.
+            if attempt == 0 and "empty review response" in str(exc):
+                await asyncio.sleep(0.75)
+                continue
+            raise
+    raise AssertionError("unreachable")
