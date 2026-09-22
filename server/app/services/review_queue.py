@@ -1,10 +1,17 @@
 import asyncio
 import json
+import logging
+import re
 import ssl
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import unquote, urlparse
 
+from pg8000.exceptions import DatabaseError as PGDatabaseError
+from pg8000.exceptions import InterfaceError as PGInterfaceError
+
 from app.core.config import database_url
+
+_LOG = logging.getLogger(__name__)
 
 
 class ReviewQueueService:
@@ -88,44 +95,31 @@ class ReviewQueueService:
         return await asyncio.to_thread(self._get_item, queue_item_id)
 
     def _list_items(self, status: str) -> list[dict[str, Any]]:
-        connection = _connect()
-        try:
+        def operation(connection) -> list[dict[str, Any]]:
             _initialize_schema(connection)
             rows = _run(
                 connection,
-                """
-                SELECT id, delivery_id, repository, pr_number, head_sha,
-                       review_payload_json, specialist_failures_json, status, reason,
-                       created_at, updated_at, resolved_at, resolved_by
-                FROM review_queue WHERE status = %s ORDER BY created_at ASC
-                """,
+                _SELECT_ITEM_SQL + " WHERE status = %s ORDER BY created_at ASC",
                 (status,),
             )
             return [_queue_item(row) for row in rows]
-        finally:
-            connection.close()
+
+        return _execute(operation)
 
     def _get_item(self, queue_item_id: int) -> dict[str, Any] | None:
-        connection = _connect()
-        try:
+        def operation(connection) -> dict[str, Any] | None:
             _initialize_schema(connection)
             rows = _run(
                 connection,
-                """
-                SELECT id, delivery_id, repository, pr_number, head_sha,
-                       review_payload_json, specialist_failures_json, status, reason,
-                       created_at, updated_at, resolved_at, resolved_by
-                FROM review_queue WHERE id = %s
-                """,
+                _SELECT_ITEM_SQL + " WHERE id = %s",
                 (queue_item_id,),
             )
             return _queue_item(rows[0]) if rows else None
-        finally:
-            connection.close()
+
+        return _execute(operation)
 
     def _enqueue(self, **values: Any) -> int:
-        connection = _connect()
-        try:
+        def operation(connection) -> int:
             _initialize_schema(connection)
             row = _run(
                 connection,
@@ -150,8 +144,8 @@ class ReviewQueueService:
             )[0]
             _run(connection, "COMMIT")
             return int(row[0])
-        finally:
-            connection.close()
+
+        return _execute(operation)
 
     def _record_decision(self, **values: Any) -> int:
         status = {
@@ -162,8 +156,7 @@ class ReviewQueueService:
         if status is None:
             raise ValueError("decision must be approve, reject, or edit")
 
-        connection = _connect()
-        try:
+        def operation(connection) -> int:
             _initialize_schema(connection)
             updated = _run(
                 connection,
@@ -207,12 +200,11 @@ class ReviewQueueService:
             )
             _run(connection, "COMMIT")
             return int(row[0])
-        finally:
-            connection.close()
+
+        return _execute(operation)
 
     def _record_automatic_decision(self, **values: Any) -> int:
-        connection = _connect()
-        try:
+        def operation(connection) -> int:
             _initialize_schema(connection)
             row = _run(
                 connection,
@@ -236,8 +228,60 @@ class ReviewQueueService:
             )[0]
             _run(connection, "COMMIT")
             return int(row[0])
+
+        return _execute(operation)
+
+
+_SELECT_ITEM_SQL = """
+    SELECT id, delivery_id, repository, pr_number, head_sha,
+           review_payload_json, specialist_failures_json, status, reason,
+           created_at, updated_at, resolved_at, resolved_by
+    FROM review_queue
+"""
+
+# SQLSTATEs that indicate the session was dropped or reset beneath us (most
+# commonly Neon's transaction-mode pooler recycling a connection, which breaks
+# pg8000's extended-protocol prepared statements). Class 08 = connection
+# exception, 57P01/57P02 = admin shutdown / crash, 26000 = prepared statement
+# gone. A single reconnect clears these because every operation opens a fresh
+# connection anyway.
+_STALE_SQLSTATES = frozenset(
+    {"26000", "08000", "08001", "08003", "08004", "08006", "08P01", "57P01", "57P02"}
+)
+
+
+def _is_stale_session(exc: BaseException) -> bool:
+    if isinstance(exc, (PGInterfaceError, OSError, TimeoutError)):
+        return True
+    if isinstance(exc, PGDatabaseError):
+        detail = exc.args[0] if exc.args and isinstance(exc.args[0], dict) else {}
+        return detail.get("C") in _STALE_SQLSTATES
+    return False
+
+
+def _execute(operation: Callable[[Any], Any]) -> Any:
+    """Run one DB operation, retrying once with a fresh connection.
+
+    Every operation builds its own short-lived connection, so a stale session
+    is always recovered simply by reconnecting. An operation that genuinely
+    failed is never duplicated: the first attempt either never executed on the
+    server (prepared-statement desync) or raised a connection-level error.
+    """
+    for attempt in range(2):
+        connection = _connect()
+        try:
+            return operation(connection)
+        except Exception as exc:
+            if attempt == 1 or not _is_stale_session(exc):
+                raise
+            _LOG.warning(
+                "db session recycled, reconnecting (attempt %d): %s",
+                attempt + 1,
+                exc,
+            )
         finally:
             connection.close()
+    return None  # unreachable
 
 
 def _connect():

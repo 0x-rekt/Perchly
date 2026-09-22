@@ -136,6 +136,9 @@ class ReviewWorkflow:
                 {
                     "specialist_results": specialist_results,
                     "specialist_failures": specialist_failures,
+                    "repository": input.repository,
+                    "pr_number": input.pr_number,
+                    "head_sha": input.head_sha,
                 },
                 start_to_close_timeout=_ACTIVITY_TIMEOUT,
                 retry_policy=_RETRY_POLICY,
@@ -154,7 +157,12 @@ class ReviewWorkflow:
                 if decision.decision == "edit":
                     edited_review = await workflow.execute_activity(
                         validate_edited_review,
-                        decision.edited_review,
+                        {
+                            "review": decision.edited_review,
+                            "repository": input.repository,
+                            "pr_number": input.pr_number,
+                            "head_sha": input.head_sha,
+                        },
                         start_to_close_timeout=_ACTIVITY_TIMEOUT,
                         retry_policy=_RETRY_POLICY,
                     )
@@ -169,6 +177,9 @@ class ReviewWorkflow:
                     {
                         "queue_item_id": routing["queue_item_id"],
                         "decision": asdict(decision),
+                        "repository": input.repository,
+                        "pr_number": input.pr_number,
+                        "head_sha": input.head_sha,
                     },
                     start_to_close_timeout=_ACTIVITY_TIMEOUT,
                     retry_policy=_RETRY_POLICY,

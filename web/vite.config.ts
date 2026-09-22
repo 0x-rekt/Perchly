@@ -9,6 +9,7 @@ export default defineConfig({
     port: 5173,
     proxy: {
       "/reviews": "http://localhost:8000",
+      "/observability": "http://localhost:8000",
     },
   },
 });

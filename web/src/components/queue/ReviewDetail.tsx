@@ -1,35 +1,17 @@
 import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
+import { submitDecision } from "../../lib/api";
 import {
   AlertCircle,
   Check,
   FileCode2,
   LoaderCircle,
   RotateCcw,
+  TriangleAlert,
   X,
-} from "../icons";
-import type { Decision, Finding, Review, ReviewItem } from "../types";
-
-const label = (value: string) =>
-  value.replaceAll("_", " ").replace(/\b\w/g, (char) => char.toUpperCase());
-
-async function submitDecision(
-  itemId: number,
-  decision: Decision,
-  body: Record<string, unknown>,
-) {
-  const response = await fetch(`/reviews/queue/${itemId}/${decision}`, {
-    method: "POST",
-    headers: { Accept: "application/json", "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  if (!response.ok) {
-    const payload = (await response.json().catch(() => null)) as {
-      detail?: string;
-    } | null;
-    throw new Error(payload?.detail ?? `Request failed (${response.status})`);
-  }
-}
+} from "../../lib/icons";
+import { shaShort, titleCase } from "../../lib/format";
+import type { Decision, Finding, Review, ReviewItem } from "../../types";
 
 export function ReviewDetail({
   item,
@@ -89,16 +71,18 @@ export function ReviewDetail({
     }
   };
 
+  const failures = Object.entries(item.specialist_failures);
+
   return (
-    <section className="review-detail">
+    <section className="review-detail" aria-label="Review detail">
       <div className="detail-header">
         <div>
           <p className="repo-label">{item.repository}</p>
           <h3>Pull request #{item.pr_number}</h3>
-          <p className="sha">{item.head_sha}</p>
+          <p className="sha">{shaShort(item.head_sha)}</p>
         </div>
         <span className="reason-tag">
-          <AlertCircle size={14} /> {label(item.reason)}
+          <AlertCircle size={14} /> {titleCase(item.reason)}
         </span>
       </div>
       {item.review_payload.title && (
@@ -117,10 +101,10 @@ export function ReviewDetail({
             key={`${finding.file}-${finding.line_start}-${index}`}
           />
         ))}
-        {Object.keys(item.specialist_failures).length > 0 && (
+        {failures.length > 0 && (
           <div className="specialist-failures">
             <p>Specialist failures</p>
-            {Object.entries(item.specialist_failures).map(([name, message]) => (
+            {failures.map(([name, message]) => (
               <span key={name}>
                 <b>{name}:</b> {message}
               </span>
@@ -130,8 +114,8 @@ export function ReviewDetail({
       </div>
       <div className="decision-panel">
         {error && (
-          <div className="decision-error">
-            <AlertCircle size={16} />
+          <div className="decision-error" role="alert">
+            <TriangleAlert size={16} />
             <span>{error}</span>
             <button
               type="button"
@@ -235,10 +219,12 @@ function Field({
         value={value}
         onChange={(event) => onChange(event.target.value)}
         placeholder={placeholder}
+        autoComplete="off"
       />
     </label>
   );
 }
+
 function FindingCard({ finding }: { finding: Finding }) {
   return (
     <article className="finding-card">
@@ -246,7 +232,7 @@ function FindingCard({ finding }: { finding: Finding }) {
         <span className={`severity severity-${finding.severity}`}>
           {finding.severity}
         </span>
-        <span className="category">{finding.category}</span>
+        <span className="category">{titleCase(finding.category)}</span>
         <span className="confidence">
           {Math.round(finding.confidence * 100)}% confidence
         </span>
@@ -264,6 +250,7 @@ function FindingCard({ finding }: { finding: Finding }) {
     </article>
   );
 }
+
 function Action({
   label,
   icon,

@@ -5,6 +5,7 @@ from typing import Protocol, Sequence
 
 from app.agents import SPECIALIST_AGENTS
 from app.schemas.findings import FindingCategory, ReviewResult
+from app.services.telemetry import ReviewContext
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +21,7 @@ class ReviewSpecialist(Protocol):
         description: str | None,
         diff: str,
         retrieved_context: str = "",
+        telemetry_ctx: ReviewContext | None = None,
     ) -> ReviewResult: ...
 
 
@@ -42,22 +44,23 @@ async def run_specialists(
     diff: str,
     contexts: dict[FindingCategory, str] | None = None,
     specialists: Sequence[ReviewSpecialist] = SPECIALIST_AGENTS,
+    telemetry_ctx: ReviewContext | None = None,
 ) -> SpecialistRunResult:
     """Run specialists concurrently; one agent failure never discards other results."""
     _validate_specialists(specialists)
     contexts = contexts or {}
-    responses = await asyncio.gather(
-        *(
-            specialist.review(
-                title=title,
-                description=description,
-                diff=diff,
-                retrieved_context=contexts.get(specialist.category, ""),
-            )
-            for specialist in specialists
-        ),
-        return_exceptions=True,
-    )
+    calls: list[object] = []
+    for specialist in specialists:
+        kwargs: dict[str, object] = {
+            "title": title,
+            "description": description,
+            "diff": diff,
+            "retrieved_context": contexts.get(specialist.category, ""),
+        }
+        if telemetry_ctx is not None:
+            kwargs["telemetry_ctx"] = telemetry_ctx
+        calls.append(specialist.review(**kwargs))
+    responses = await asyncio.gather(*calls, return_exceptions=True)
 
     run = SpecialistRunResult()
     for specialist, response in zip(specialists, responses, strict=True):

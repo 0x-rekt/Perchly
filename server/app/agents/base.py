@@ -2,6 +2,7 @@ from dataclasses import dataclass
 
 from app.schemas.findings import FindingCategory, ReviewResult
 from app.services.gemini import review_diff
+from app.services.telemetry import ReviewContext
 
 
 @dataclass(frozen=True)
@@ -30,6 +31,7 @@ contains no actionable issue in your scope, return an empty findings list."""
         description: str | None,
         diff: str,
         retrieved_context: str = "",
+        telemetry_ctx: ReviewContext | None = None,
     ) -> ReviewResult:
         """Review PR input. Context becomes meaningful once Phase 1 retrieval is added."""
         context_instructions = self.instructions
@@ -45,4 +47,5 @@ Relevant repository context:
             description=description,
             diff=diff,
             specialist_instructions=context_instructions,
+            telemetry_ctx=telemetry_ctx,
         )

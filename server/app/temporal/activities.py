@@ -14,11 +14,13 @@ from app.services.retrieval import RetrievalService
 from app.services.routing import route_review
 from app.services.review_queue import ReviewQueueService
 from app.services.specialist_runner import SpecialistRunResult
+from app.services.telemetry import ReviewContext, instrument_activity
 from app.agents import SPECIALIST_AGENTS
 from app.workers.review import format_aggregated_review_comment
 
 
 @activity.defn
+@instrument_activity(phase="fetch")
 async def fetch_review_context(input: dict[str, Any]) -> dict[str, Any]:
     """Fetch GitHub data needed by the deterministic workflow."""
     values = _workflow_input_values(input)
@@ -53,6 +55,7 @@ async def fetch_review_context(input: dict[str, Any]) -> dict[str, Any]:
 
 
 @activity.defn
+@instrument_activity(phase="retrieval")
 async def retrieve_repository_context(
     fetched: dict[str, Any],
 ) -> dict[str, Any]:
@@ -61,31 +64,49 @@ async def retrieve_repository_context(
         RepositoryFile(path=file["path"], content=file["content"])
         for file in fetched["repository_files"]
     ]
+    ctx = ReviewContext(
+        review_run_id=activity.info().workflow_id,
+        repository=fetched["repository"],
+        pr_number=fetched["pr_number"],
+        head_sha=fetched["head_sha"],
+        agent="retrieval",
+    )
     contexts = await RetrievalService().build_contexts(
         repository=fetched["repository"],
         head_sha=fetched["head_sha"],
         diff=fetched["diff"],
         repository_files=repository_files,
+        telemetry_ctx=ctx,
     )
     return {**fetched, "contexts": contexts}
 
 
 @activity.defn
+@instrument_activity(phase="agent")
 async def run_specialist(payload: dict[str, Any]) -> dict[str, Any]:
     """Run one independently managed specialist activity."""
     category = payload["category"]
     specialist = next(agent for agent in SPECIALIST_AGENTS if agent.category == category)
     retrieved = payload["retrieved"]
+    ctx = ReviewContext(
+        review_run_id=activity.info().workflow_id,
+        repository=retrieved["repository"],
+        pr_number=retrieved["pr_number"],
+        head_sha=retrieved["head_sha"],
+        agent=category,
+    )
     review = await specialist.review(
         title=retrieved["title"],
         description=retrieved["description"],
         diff=retrieved["diff"],
         retrieved_context=retrieved["contexts"].get(category, ""),
+        telemetry_ctx=ctx,
     )
     return {"category": category, "review": review.model_dump()}
 
 
 @activity.defn
+@instrument_activity(phase="cleanup")
 async def release_review_claim(input: dict[str, Any]) -> None:
     """Release a claimed PR head so a failed workflow can be retried."""
     from app.services.idempotency import IdempotencyStore
@@ -98,6 +119,7 @@ async def release_review_claim(input: dict[str, Any]) -> None:
 
 
 @activity.defn
+@instrument_activity(phase="aggregation")
 async def aggregate_review(
     specialist_payload: dict[str, Any],
 ) -> dict[str, Any]:
@@ -117,6 +139,7 @@ async def aggregate_review(
 
 
 @activity.defn
+@instrument_activity(phase="routing")
 async def route_aggregated_review(review: dict[str, Any]) -> dict[str, Any]:
     """Apply confidence and failure policy before any GitHub post."""
     fetched = review["fetched"]
@@ -148,6 +171,7 @@ async def route_aggregated_review(review: dict[str, Any]) -> dict[str, Any]:
 
 
 @activity.defn
+@instrument_activity(phase="persistence")
 async def persist_automatic_decision(payload: dict[str, Any]) -> int:
     fetched = payload["fetched"]
     return await ReviewQueueService().record_automatic_decision(
@@ -161,6 +185,7 @@ async def persist_automatic_decision(payload: dict[str, Any]) -> int:
 
 
 @activity.defn
+@instrument_activity(phase="persistence")
 async def persist_reviewer_decision(payload: dict[str, Any]) -> int:
     return await ReviewQueueService().record_reviewer_decision(
         queue_item_id=payload["queue_item_id"],
@@ -169,8 +194,10 @@ async def persist_reviewer_decision(payload: dict[str, Any]) -> int:
 
 
 @activity.defn
-async def validate_edited_review(review: dict[str, Any]) -> dict[str, Any]:
+@instrument_activity(phase="validation")
+async def validate_edited_review(payload: dict[str, Any]) -> dict[str, Any]:
     """Validate an edited review before it is persisted or posted."""
+    review = payload["review"]
     if not isinstance(review, dict) or not isinstance(review.get("findings"), list):
         raise ValueError("edited review must contain a findings list")
     failures = review.get("failures", {})
@@ -178,13 +205,14 @@ async def validate_edited_review(review: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("edited review failures must be an object")
     return {
         "findings": [finding.model_dump() for finding in (
-            _finding_result(payload) for payload in review["findings"]
+            _finding_result(entry) for entry in review["findings"]
         )],
         "failures": {str(key): str(value) for key, value in failures.items()},
     }
 
 
 @activity.defn
+@instrument_activity(phase="posting")
 async def post_review(payload: dict[str, Any]) -> bool:
     """Render and post the aggregated review through GitHub."""
     review = payload["review"]

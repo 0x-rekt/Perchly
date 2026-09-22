@@ -1,11 +1,16 @@
 import asyncio
+import logging
 import re
 import ssl
+import time
+from decimal import Decimal
 from urllib.parse import unquote, urlparse
 from dataclasses import dataclass
 
 from google import genai
 from google.genai import types
+from pg8000.exceptions import DatabaseError as PGDatabaseError
+from pg8000.exceptions import InterfaceError as PGInterfaceError
 from pgvector import Vector
 
 from app.core.config import (
@@ -15,8 +20,12 @@ from app.core.config import (
     database_url,
     gemini_api_key,
 )
+from app.core.pricing import calculate_cost
 from app.schemas.findings import FindingCategory
 from app.services.github_api import RepositoryFile
+from app.services.telemetry import ReviewContext
+
+logger = logging.getLogger(__name__)
 
 _HUNK_HEADER = re.compile(r"^@@ -(?:\d+)(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
 _FILE_HEADER = re.compile(r"^diff --git a/(.*?) b/(.*?)$")
@@ -132,6 +141,7 @@ class RetrievalService:
         head_sha: str,
         diff: str,
         repository_files: list[RepositoryFile] | None = None,
+        telemetry_ctx: ReviewContext | None = None,
     ) -> dict[FindingCategory, str]:
         chunks = [
             chunk
@@ -147,60 +157,127 @@ class RetrievalService:
             repository=repository,
             head_sha=head_sha,
             chunks=chunks,
+            telemetry_ctx=telemetry_ctx,
         )
 
     def _build_contexts(
-        self, *, repository: str, head_sha: str, chunks: list[CodeChunk]
+        self,
+        *,
+        repository: str,
+        head_sha: str,
+        chunks: list[CodeChunk],
+        telemetry_ctx: ReviewContext | None = None,
     ) -> dict[FindingCategory, str]:
         from pgvector.pg8000 import register_vector
-        from pg8000.native import Connection
 
         client = genai.Client(api_key=gemini_api_key())
-        embeddings = _embed(client, [chunk.content for chunk in chunks])
-        parsed_url = urlparse(database_url())
-        connection = Connection(
-            user=unquote(parsed_url.username or ""),
-            password=unquote(parsed_url.password or ""),
-            host=parsed_url.hostname,
-            port=parsed_url.port or 5432,
-            database=parsed_url.path.lstrip("/"),
-            ssl_context=ssl.create_default_context(),
-            timeout=10,
-        )
-        try:
-            register_vector(connection)
-            _initialize_schema(connection)
-            repository_id = _upsert_repository(connection, repository)
-            _store_chunks(
-                connection,
-                repository_id=repository_id,
-                head_sha=head_sha,
-                chunks=chunks,
-                embeddings=embeddings,
-            )
-            contexts: dict[FindingCategory, str] = {}
-            for category, query in SPECIALIST_QUERIES.items():
-                query_embedding = _embed(client, [query])[0]
-                contexts[category] = _retrieve_category_context(
+        embeddings = _embed(client, [chunk.content for chunk in chunks], telemetry_ctx=telemetry_ctx)
+
+        for attempt in range(2):
+            connection = _connect()
+            try:
+                register_vector(connection)
+                _initialize_schema(connection)
+                repository_id = _upsert_repository(connection, repository)
+                _store_chunks(
                     connection,
                     repository_id=repository_id,
                     head_sha=head_sha,
-                    category=category,
-                    query_embedding=Vector(query_embedding),
+                    chunks=chunks,
+                    embeddings=embeddings,
                 )
-            _run(connection, "COMMIT")
-            return contexts
-        finally:
-            connection.close()
+                contexts: dict[FindingCategory, str] = {}
+                for category, query in SPECIALIST_QUERIES.items():
+                    query_embedding = _embed(client, [query], telemetry_ctx=telemetry_ctx)[0]
+                    contexts[category] = _retrieve_category_context(
+                        connection,
+                        repository_id=repository_id,
+                        head_sha=head_sha,
+                        category=category,
+                        query_embedding=Vector(query_embedding),
+                    )
+                _run(connection, "COMMIT")
+                return contexts
+            except Exception as exc:
+                if attempt == 1 or not _is_stale_session(exc):
+                    raise
+                logger.warning(
+                    "db session recycled during retrieval, reconnecting (attempt %d): %s",
+                    attempt + 1,
+                    exc,
+                )
+            finally:
+                connection.close()
+        return {}  # unreachable
 
 
-def _embed(client: genai.Client, contents: list[str]) -> list[list[float]]:
+def _connect():
+    from pg8000.native import Connection
+
+    parsed = urlparse(database_url())
+    return Connection(
+        user=unquote(parsed.username or ""),
+        password=unquote(parsed.password or ""),
+        host=parsed.hostname,
+        port=parsed.port or 5432,
+        database=parsed.path.lstrip("/"),
+        ssl_context=ssl.create_default_context(),
+        timeout=10,
+    )
+
+
+# SQLSTATEs produced when Neon's transaction-mode pooler recycles a session
+# (dropping pg8000's extended-protocol prepared statements mid-activity):
+# class 08 = connection exception, 26000 = prepared statement gone.
+_STALE_SQLSTATES = frozenset(
+    {"26000", "08000", "08001", "08003", "08004", "08006", "08P01", "57P01", "57P02"}
+)
+
+
+def _is_stale_session(exc: BaseException) -> bool:
+    if isinstance(exc, (PGInterfaceError, OSError, TimeoutError)):
+        return True
+    if isinstance(exc, PGDatabaseError):
+        detail = exc.args[0] if exc.args and isinstance(exc.args[0], dict) else {}
+        return detail.get("C") in _STALE_SQLSTATES
+    return False
+
+
+def _embed(
+    client: genai.Client,
+    contents: list[str],
+    telemetry_ctx: ReviewContext | None = None,
+) -> list[list[float]]:
+    ctx = telemetry_ctx if telemetry_ctx is not None else ReviewContext()
     embeddings: list[list[float]] = []
     for content in contents:
-        response = client.models.embed_content(
-            model=GEMINI_EMBEDDING_MODEL,
-            contents=content,
-            config=types.EmbedContentConfig(output_dimensionality=EMBEDDING_DIMENSIONS),
+        t0 = time.monotonic()
+        try:
+            response = client.models.embed_content(
+                model=GEMINI_EMBEDDING_MODEL,
+                contents=content,
+                config=types.EmbedContentConfig(output_dimensionality=EMBEDDING_DIMENSIONS),
+            )
+        except Exception as exc:
+            _emit_embedding_span(
+                ctx,
+                latency_ms=int((time.monotonic() - t0) * 1000),
+                tokens_in=0,
+                content=content,
+                status="failed",
+                error_message=str(exc),
+            )
+            raise
+        latency_ms = int((time.monotonic() - t0) * 1000)
+        usage = getattr(response, "usage_metadata", None)
+        tokens_in = getattr(usage, "prompt_token_count", 0) or 0
+        cost = calculate_cost(model=GEMINI_EMBEDDING_MODEL, tokens_in=tokens_in)
+        _emit_embedding_span(
+            ctx,
+            latency_ms=latency_ms,
+            tokens_in=tokens_in,
+            cost_usd=cost,
+            content=content,
         )
         returned = response.embeddings or []
         if len(returned) != 1:
@@ -216,6 +293,41 @@ def _embed(client: genai.Client, contents: list[str]) -> list[list[float]]:
             )
         embeddings.append(embedding)
     return embeddings
+
+
+def _emit_embedding_span(
+    ctx: ReviewContext,
+    *,
+    latency_ms: int,
+    tokens_in: int,
+    content: str,
+    cost_usd: Decimal | float | None = None,
+    status: str = "success",
+    error_message: str | None = None,
+) -> None:
+    """Fire-and-forget embedding span write – runs inside the thread."""
+    try:
+        from app.services.telemetry import emit_span
+
+        emit_span(
+            review_run_id=ctx.review_run_id,
+            repository=ctx.repository,
+            pr_number=ctx.pr_number,
+            head_sha=ctx.head_sha,
+            agent=ctx.agent,
+            phase="retrieval",
+            span_type="llm_call",
+            model=GEMINI_EMBEDDING_MODEL,
+            tokens_in=tokens_in,
+            tokens_out=0,
+            cost_usd=cost_usd,
+            latency_ms=latency_ms,
+            input_summary=content[:500],
+            status=status,
+            error_message=error_message,
+        )
+    except Exception:
+        pass
 
 
 def _initialize_schema(connection) -> None:

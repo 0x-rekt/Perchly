@@ -1,10 +1,14 @@
 import asyncio
+import time
+from decimal import Decimal
 
 from google import genai
 from google.genai import types
 
 from app.core.config import GEMINI_MODEL, gemini_api_key
+from app.core.pricing import calculate_cost
 from app.schemas.findings import ReviewResult
+from app.services.telemetry import ReviewContext
 
 MAX_DIFF_CHARACTERS = 30_000
 
@@ -40,17 +44,46 @@ Diff:
 """
 
 
-def _generate_review(*, prompt: str) -> ReviewResult:
+def _generate_review(
+    *, prompt: str, telemetry_ctx: ReviewContext, model: str
+) -> ReviewResult:
     client = genai.Client(api_key=gemini_api_key())
-    response = client.models.generate_content(
-        model=GEMINI_MODEL,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-            response_schema=ReviewResult,
-            temperature=0,
-        ),
+    t0 = time.monotonic()
+    try:
+        response = client.models.generate_content(
+            model=model,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=ReviewResult,
+                temperature=0,
+            ),
+        )
+    except Exception as exc:
+        latency_ms = int((time.monotonic() - t0) * 1000)
+        _emit_llm_span(
+            ctx=telemetry_ctx, model=model, phase="agent", latency_ms=latency_ms,
+            tokens_in=0, tokens_out=0,
+            input_summary=prompt[:500],
+            status="failed", error_message=str(exc),
+        )
+        raise
+
+    latency_ms = int((time.monotonic() - t0) * 1000)
+
+    # Extract token usage from response metadata when available.
+    usage = getattr(response, "usage_metadata", None)
+    tokens_in  = getattr(usage, "prompt_token_count",     0) or 0
+    tokens_out = getattr(usage, "candidates_token_count", 0) or 0
+    cost = calculate_cost(model=model, tokens_in=tokens_in, tokens_out=tokens_out)
+
+    _emit_llm_span(
+        ctx=telemetry_ctx, model=model, phase="agent", latency_ms=latency_ms,
+        tokens_in=tokens_in, tokens_out=tokens_out, cost_usd=cost,
+        input_summary=prompt[:500],
+        output_summary=(response.text or "")[:500],
     )
+
     if not response.text:
         raise GeminiReviewError("Gemini returned an empty review response")
 
@@ -60,14 +93,55 @@ def _generate_review(*, prompt: str) -> ReviewResult:
         raise GeminiReviewError("Gemini returned an invalid review response") from error
 
 
+def _emit_llm_span(
+    *,
+    ctx: ReviewContext,
+    model: str,
+    phase: str,
+    latency_ms: int,
+    tokens_in: int,
+    tokens_out: int,
+    cost_usd: Decimal | float | None = None,
+    input_summary: str | None = None,
+    output_summary: str | None = None,
+    status: str = "success",
+    error_message: str | None = None,
+) -> None:
+    """Fire-and-forget span write – runs inside the thread, never raises."""
+    try:
+        from app.services.telemetry import emit_span
+        emit_span(
+            review_run_id=ctx.review_run_id,
+            repository=ctx.repository,
+            pr_number=ctx.pr_number,
+            head_sha=ctx.head_sha,
+            agent=ctx.agent,
+            phase=phase,
+            span_type="llm_call",
+            model=model,
+            tokens_in=tokens_in,
+            tokens_out=tokens_out,
+            cost_usd=cost_usd,
+            latency_ms=latency_ms,
+            input_summary=input_summary,
+            output_summary=output_summary,
+            status=status,
+            error_message=error_message,
+        )
+    except Exception:
+        pass
+
+
 async def review_diff(
     *,
     title: str,
     description: str | None,
     diff: str,
     specialist_instructions: str = "",
+    telemetry_ctx: ReviewContext | None = None,
 ) -> ReviewResult:
     """Request a schema-constrained Gemini review without blocking the event loop."""
+    ctx = telemetry_ctx or ReviewContext()
     return await asyncio.to_thread(
         _generate_review,
         prompt=_review_prompt(
@@ -76,4 +150,7 @@ async def review_diff(
             diff=diff,
             specialist_instructions=specialist_instructions,
         ),
+        telemetry_ctx=ctx,
+        model=GEMINI_MODEL,
     )
+
