@@ -8,7 +8,7 @@ from google.genai import types
 from app.core.config import GEMINI_MODEL, gemini_api_key
 from app.core.pricing import calculate_cost
 from app.schemas.findings import ReviewResult
-from app.services.telemetry import ReviewContext
+from app.services.telemetry import ReviewContext, otel_span
 
 MAX_DIFF_CHARACTERS = 30_000
 
@@ -50,15 +50,32 @@ def _generate_review(
     client = genai.Client(api_key=gemini_api_key())
     t0 = time.monotonic()
     try:
-        response = client.models.generate_content(
-            model=model,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                response_schema=ReviewResult,
-                temperature=0,
-            ),
-        )
+        with otel_span(
+            "perchly.llm.generate_content",
+            attributes={
+                "perchly.review_run_id": telemetry_ctx.review_run_id,
+                "perchly.repository": telemetry_ctx.repository,
+                "perchly.pr_number": telemetry_ctx.pr_number,
+                "perchly.head_sha": telemetry_ctx.head_sha,
+                "perchly.agent": telemetry_ctx.agent,
+                "perchly.phase": "agent",
+                "perchly.span_type": "llm_call",
+                "gen_ai.system": "gemini",
+                "gen_ai.request.model": model,
+            },
+        ) as otel:
+            response = client.models.generate_content(
+                model=model,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    response_schema=ReviewResult,
+                    temperature=0,
+                ),
+            )
+            usage = getattr(response, "usage_metadata", None)
+            otel.set_attribute("gen_ai.usage.input_tokens", getattr(usage, "prompt_token_count", 0) or 0)
+            otel.set_attribute("gen_ai.usage.output_tokens", getattr(usage, "candidates_token_count", 0) or 0)
     except Exception as exc:
         latency_ms = int((time.monotonic() - t0) * 1000)
         _emit_llm_span(
@@ -77,20 +94,55 @@ def _generate_review(
     tokens_out = getattr(usage, "candidates_token_count", 0) or 0
     cost = calculate_cost(model=model, tokens_in=tokens_in, tokens_out=tokens_out)
 
+    response_text = _response_text(response)
+
     _emit_llm_span(
         ctx=telemetry_ctx, model=model, phase="agent", latency_ms=latency_ms,
         tokens_in=tokens_in, tokens_out=tokens_out, cost_usd=cost,
         input_summary=prompt[:500],
-        output_summary=(response.text or "")[:500],
+        output_summary=response_text[:500],
     )
 
-    if not response.text:
-        raise GeminiReviewError("Gemini returned an empty review response")
+    if not response_text:
+        finish_reasons = [
+            str(getattr(candidate, "finish_reason", "unknown"))
+            for candidate in (getattr(response, "candidates", None) or [])
+        ]
+        prompt_feedback = getattr(response, "prompt_feedback", None)
+        detail = ", ".join(finish_reasons) or "no candidates"
+        if prompt_feedback:
+            detail = f"{detail}; prompt_feedback={prompt_feedback}"
+        raise GeminiReviewError(f"Gemini returned an empty review response ({detail})")
 
     try:
-        return ReviewResult.model_validate_json(response.text)
+        return ReviewResult.model_validate_json(response_text)
     except ValueError as error:
         raise GeminiReviewError("Gemini returned an invalid review response") from error
+
+
+def _response_text(response: object) -> str:
+    """Extract text from Gemini's normal and structured-output response forms."""
+    text = getattr(response, "text", None)
+    if isinstance(text, str) and text.strip():
+        return text
+
+    # Some google-genai versions expose schema-constrained output as ``parsed``
+    # instead of populating the convenience ``text`` property.
+    parsed = getattr(response, "parsed", None)
+    if parsed is not None:
+        try:
+            return ReviewResult.model_validate(parsed).model_dump_json()
+        except (TypeError, ValueError):
+            pass
+
+    parts: list[str] = []
+    for candidate in getattr(response, "candidates", None) or []:
+        content = getattr(candidate, "content", None)
+        for part in getattr(content, "parts", None) or []:
+            part_text = getattr(part, "text", None)
+            if isinstance(part_text, str) and part_text.strip():
+                parts.append(part_text)
+    return "\n".join(parts)
 
 
 def _emit_llm_span(
@@ -153,4 +205,3 @@ async def review_diff(
         telemetry_ctx=ctx,
         model=GEMINI_MODEL,
     )
-
