@@ -1,22 +1,12 @@
 # Perchly
 
-**An open-source AI pull-request review agent — four specialist agents, one structured review, human-in-the-loop safety, and full observability.**
-
-[![GitHub](https://img.shields.io/badge/repo-0x--rekt%2FPerchly-181717?logo=github)](https://github.com/0x-rekt/Perchly)
-[![License: MIT](https://img.shields.io/badge/license-MIT-brightgreen)](#license)
 [![Python](https://img.shields.io/badge/python-3.14-blue?logo=python)](https://python.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.141-009688?logo=fastapi)](https://fastapi.tiangolo.com)
 [![Temporal](https://img.shields.io/badge/Temporal-1.33-8358FF)](https://temporal.io)
 
----
-
-## What is Perchly?
-
-Perchly hooks into your GitHub repository via a GitHub App. Every time a pull request is opened or updated, four LLM specialist agents run in parallel — covering **security**, **code quality**, **test coverage**, and **documentation** — and post a single structured review back to the PR. Findings that don't meet the configured confidence threshold are held in a **human-in-the-loop approval queue** instead of being posted automatically.
+**An AI pull-request review agent.** Perchly hooks into a GitHub repository via a GitHub App. Every time a pull request is opened or updated, four LLM specialist agents run in parallel — covering **security**, **code quality**, **test coverage**, and **documentation** — and post a single structured review back to the PR. Findings that don't meet the configured confidence threshold are held in a **human-in-the-loop approval queue** instead of being posted automatically.
 
 Every agent action, LLM call, and human decision is recorded as a span in a queryable PostgreSQL table. A live dashboard surfaces cost per review, latency by phase, HITL queue depth, and per-category acceptance rates.
-
-**This is a portfolio-grade, production-ready system.** It is not a prompt wrapper. It demonstrates: multi-agent orchestration, RAG over code, durable human-in-the-loop with Temporal signals, vector retrieval with pgvector, real OpenTelemetry observability, and confidence-based safety routing.
 
 ---
 
@@ -40,8 +30,7 @@ Every agent action, LLM call, and human decision is recorded as a span in a quer
 8. [Project Structure](#8-project-structure)
 9. [Architecture Decisions](#9-architecture-decisions)
 10. [Roadmap](#10-roadmap)
-11. [Contributing](#11-contributing)
-12. [License](#12-license)
+11. [License](#11-license)
 
 ---
 
@@ -49,21 +38,20 @@ Every agent action, LLM call, and human decision is recorded as a span in a quer
 
 ### Prerequisites
 
-| Requirement | Notes |
-|---|---|
-| Docker + Docker Compose | v2.20+ recommended |
-| GitHub App | [Create one](https://docs.github.com/en/apps/creating-github-apps/creating-github-apps/creating-a-github-app) with `Pull requests: Read & Write`, `Contents: Read & Write`, `Checks: Read & Write`, webhooks for `pull_request` and `pull_request_review` events |
-| Gemini API key | [Google AI Studio](https://aistudio.google.com) |
-| Cloud PostgreSQL with pgvector | [Neon](https://neon.tech) free tier works. Enable the `vector` extension. |
-| ngrok account (optional) | For exposing the webhook endpoint locally |
+| Requirement                    | Notes                                                                                                                                                                                                                                                            |
+| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Docker + Docker Compose        | v2.20+ recommended                                                                                                                                                                                                                                               |
+| GitHub App                     | [Create one](https://docs.github.com/en/apps/creating-github-apps/creating-github-apps/creating-a-github-app) with `Pull requests: Read & Write`, `Contents: Read & Write`, `Checks: Read & Write`, webhooks for `pull_request` and `pull_request_review` events |
+| Gemini API key                 | [Google AI Studio](https://aistudio.google.com)                                                                                                                                                                                                                  |
+| Cloud PostgreSQL with pgvector | [Neon](https://neon.tech) free tier works. Enable the `vector` extension.                                                                                                                                                                                        |
+| ngrok account (optional)       | For exposing the webhook endpoint locally                                                                                                                                                                                                                        |
 
 ### Steps
 
-**1. Clone and configure**
+**1. Configure**
 
 ```bash
-git clone https://github.com/0x-rekt/Perchly.git
-cd Perchly
+cd perchly
 cp .env.docker.example .env
 ```
 
@@ -84,6 +72,7 @@ docker compose up -d
 ```
 
 This starts:
+
 - `perchly-server` — FastAPI backend on `:8000`
 - `perchly-worker` — Temporal activity worker
 - `perchly-temporal` — Temporal dev server on `:7233` (UI on `:8233`)
@@ -93,6 +82,7 @@ This starts:
 **4. Register the webhook**
 
 Set your GitHub App's webhook URL to your ngrok URL:
+
 ```
 https://<your-subdomain>.ngrok-free.app/webhooks/github
 ```
@@ -103,76 +93,56 @@ https://<your-subdomain>.ngrok-free.app/webhooks/github
 
 ## 2. High-Level Design (HLD)
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                              GitHub                                      │
-│   PR open / synchronize / review events                                  │
-└───────────────────────────────┬─────────────────────────────────────────┘
-                                │ webhook (HMAC-verified)
-                                ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│                    FastAPI Server  (:8000)                               │
-│                                                                          │
-│  POST /webhooks/github  ──► verify sig ──► idempotency check            │
-│                                         └──► start Temporal workflow     │
-│  GET  /reviews/queue          (approval queue read)                      │
-│  POST /reviews/queue/{id}/approve|reject|edit                            │
-│  GET  /observability/overview|traces|traces/{id}                         │
-└───────────────────────────────┬─────────────────────────────────────────┘
-                                │ start workflow (durable)
-                                ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│                    Temporal Workflow  (per PR)                           │
-│                                                                          │
-│  1. fetch_review_context         diff + PR metadata via GitHub API       │
-│  2. retrieve_repository_context  embed + vector search (pgvector)        │
-│  3. run_specialist × 4                      ──── PARALLEL ────           │
-│       security │ quality │ test_coverage │ docs                         │
-│       each: Gemini tool-call loop → structured findings                 │
-│  4. aggregate_review    merge, deduplicate, assign finding IDs           │
-│  5. route_aggregated_review                                              │
-│       ├── [auto_post]       → post_review → GitHub PR comment           │
-│       └── [needs_approval]  → HITL queue                                │
-│                               workflow.wait_condition  ◄── Human signal │
-│                               approve / reject / edit                    │
-│                               → post_review (if approved/edited)        │
-└─────────────────────────────────┬───────────────────────────────────────┘
-                                  │ spans, findings, outcomes
-                                  ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│                  Cloud PostgreSQL (Neon + pgvector)                      │
-│                                                                          │
-│  agent_spans          every LLM/tool call: cost, latency, tokens        │
-│  review_queue         HITL pending items                                 │
-│  review_decisions     approved / rejected / edited records               │
-│  outcome_examples     accepted/dismissed findings for few-shot retrieval │
-│  code_chunks          chunked repo files with pgvector embeddings        │
-│  daily_review_metrics materialized view for dashboard aggregates         │
-└─────────────────────────────────┬───────────────────────────────────────┘
-                                  │
-                                  ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│                    React Console  (:5173)                                │
-│                                                                          │
-│  Approval queue   scan findings, approve / reject / edit per item        │
-│  Overview         reviews/day, cost, latency, HITL depth, acceptance    │
-│  Review runs      per-PR traces with span-level drill-down              │
-└─────────────────────────────────────────────────────────────────────────┘
+```mermaid
+---
+config:
+  layout: elk
+---
+flowchart LR
+    GH[(GitHub)] -->|PR webhook| WH[Webhook API]
+    WH --> WF[Review workflow]
+
+    subgraph REVIEW[Automated review]
+        WF --> CTX[Build review context]
+
+        CTX --> SEC[Security agent]
+        CTX --> QUAL[Code quality agent]
+        CTX --> TEST[Test coverage agent]
+        CTX --> DOCS[Documentation agent]
+
+        SEC -->|Find vulnerabilities| AGG[Aggregate findings]
+        QUAL -->|Check maintainability| AGG
+        TEST -->|Assess missing tests| AGG
+        DOCS -->|Check documentation| AGG
+
+        AGG --> DEC{Auto-post?}
+        DEC -->|Yes| POST[Post review]
+        DEC -->|No| APPROVE[Human approval]
+        APPROVE --> POST
+    end
+
+    POST --> GH
+
+    CTX <-->|Retrieve relevant code| DB[(PostgreSQL + pgvector)]
+    SEC & QUAL & TEST & DOCS -->|Traces and findings| DB
+
+    APPROVE <-->|Review queue| API[FastAPI]
+    API --> UI[React console]
 ```
 
 ### Technology Choices at a Glance
 
-| Layer | Technology | Why |
-|---|---|---|
-| Orchestration | **Temporal** (Python SDK 1.33) | Durable execution; native pause/resume via signals for HITL; per-activity retries and timeouts |
-| LLM | **Google Gemini** (`gemini-3.8-flash`) | Structured tool-use output for typed findings; co-located embedding API |
-| Embeddings | **Gemini Embedding** (`gemini-embedding-2`, 768d) | Code-aware embeddings; same API key as generation |
-| Vector store | **pgvector** on Neon PostgreSQL | Avoids a second database; same connection as queue and spans |
-| Webhook / API | **FastAPI** + uvicorn | Async, typed, pairs well with Temporal Python SDK |
-| Worker process | **uv** + Temporal activity worker | Separate process from API server; isolated failure domain |
-| Frontend | **React 19** + TypeScript + Vite + Tailwind | SPA proxied to the API; dark terminal aesthetic |
-| Tunnel | **ngrok** | Expose local webhook URL during development |
-| Containerisation | **Docker Compose** | Single-command local stack |
+| Layer            | Technology                                        | Why                                                                                            |
+| ---------------- | ------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| Orchestration    | **Temporal** (Python SDK 1.33)                    | Durable execution; native pause/resume via signals for HITL; per-activity retries and timeouts |
+| LLM              | **Google Gemini** (`gemini-3.8-flash`)            | Structured tool-use output for typed findings; co-located embedding API                        |
+| Embeddings       | **Gemini Embedding** (`gemini-embedding-2`, 768d) | Code-aware embeddings; same API key as generation                                              |
+| Vector store     | **pgvector** on Neon PostgreSQL                   | Avoids a second database; same connection as queue and spans                                   |
+| Webhook / API    | **FastAPI** + uvicorn                             | Async, typed, pairs well with Temporal Python SDK                                              |
+| Worker process   | **uv** + Temporal activity worker                 | Separate process from API server; isolated failure domain                                      |
+| Frontend         | **React 19** + TypeScript + Vite + Tailwind       | SPA proxied to the API; dark terminal aesthetic                                                |
+| Tunnel           | **ngrok**                                         | Expose local webhook URL during development                                                    |
+| Containerisation | **Docker Compose**                                | Single-command local stack                                                                     |
 
 ---
 
@@ -222,6 +192,7 @@ On any exception:
 ```
 
 **Signals** sent from the API server via `send_signal_by_workflow_id`:
+
 - `approve_review(ReviewDecisionInput)`
 - `reject_review(ReviewDecisionInput)`
 - `edit_review(ReviewDecisionInput)` — carries `edited_review` JSON
@@ -235,11 +206,13 @@ On any exception:
 Retrieval runs in two activities:
 
 **Stage 1 — Fetch** (`fetch_review_context`):
+
 - GitHub API: diff (`application/vnd.github.v3.diff`), PR title and body.
 - GitHub API: full text of each changed file at `head_sha`.
 - Relative-import graph walk — up to 20 related files are fetched for additional context.
 
 **Stage 2 — Embed & Query** (`retrieve_repository_context`):
+
 - Changed files are chunked (line-bounded, function-boundary-aware where possible).
 - Each chunk is embedded via Gemini Embedding API (768 dimensions).
 - Chunks are upserted into `code_chunks` + `embeddings` tables in PostgreSQL.
@@ -252,12 +225,12 @@ Retrieval runs in two activities:
 
 **Files:** [`server/app/agents/`](server/app/agents/)
 
-| Agent | Focus |
-|---|---|
-| `security` | Injection, auth/authz gaps, secret leakage, unsafe deserialization, dependency risk |
-| `quality` | Complexity, duplication, naming, dead code, anti-patterns |
-| `test_coverage` | Untested branches/functions introduced by the diff, missing edge cases |
-| `docs` | Missing/outdated docstrings, README/changelog drift, undocumented public API changes |
+| Agent           | Focus                                                                                |
+| --------------- | ------------------------------------------------------------------------------------ |
+| `security`      | Injection, auth/authz gaps, secret leakage, unsafe deserialization, dependency risk  |
+| `quality`       | Complexity, duplication, naming, dead code, anti-patterns                            |
+| `test_coverage` | Untested branches/functions introduced by the diff, missing edge cases               |
+| `docs`          | Missing/outdated docstrings, README/changelog drift, undocumented public API changes |
 
 Each agent is a `SpecialistAgent` dataclass with a category-scoped system prompt. The underlying `review_diff` call uses Gemini's structured tool-use API with the `Finding` Pydantic schema — no free-text parsing.
 
@@ -284,22 +257,24 @@ Historical outcome examples from the `outcome_examples` table are prepended as f
 **Files:** [`server/app/services/aggregation.py`](server/app/services/aggregation.py), [`server/app/services/routing.py`](server/app/services/routing.py)
 
 **Aggregation:**
+
 - Merges findings from all four agents.
 - Assigns stable `finding_id` (SHA-256 over `repo + pr + sha + category + file + lines + message`).
 - Deduplicates findings that share the same `finding_id`.
 
 **Routing policy:**
 
-| Condition | Route | Reason key |
-|---|---|---|
-| Any specialist failure | `needs_approval` | `specialist_failure` |
-| Any unresolved error | `needs_approval` | `unresolved_review_error` |
+| Condition                                | Route            | Reason key                              |
+| ---------------------------------------- | ---------------- | --------------------------------------- |
+| Any specialist failure                   | `needs_approval` | `specialist_failure`                    |
+| Any unresolved error                     | `needs_approval` | `unresolved_review_error`               |
 | Finding count > `MAX_AUTO_POST_FINDINGS` | `needs_approval` | `finding_count_exceeds_auto_post_limit` |
-| Any critical security finding | `needs_approval` | `critical_security_finding` |
-| Any finding confidence < threshold | `needs_approval` | `finding_below_confidence_threshold` |
-| All conditions pass | `auto_post` | `all_findings_meet_policy` |
+| Any critical security finding            | `needs_approval` | `critical_security_finding`             |
+| Any finding confidence < threshold       | `needs_approval` | `finding_below_confidence_threshold`    |
+| All conditions pass                      | `auto_post`      | `all_findings_meet_policy`              |
 
 Configurable thresholds:
+
 - `PERCHLY_AUTO_POST_THRESHOLD` (default `0.90`) — all categories
 - `PERCHLY_SECURITY_AUTO_POST_THRESHOLD` (default `0.95`) — security findings only
 - `PERCHLY_MAX_AUTO_POST_FINDINGS` (default `20`) — finding count cap
@@ -328,6 +303,7 @@ Every Temporal activity emits a span via `write_span_sync()`, stored in the `age
 Span fields: `review_run_id`, `repository`, `pr_number`, `head_sha`, `agent`, `phase`, `span_type` (`llm_call` / `tool_call` / `retrieval`), `model`, `tokens_in`, `tokens_out`, `cost_usd`, `latency_ms`, `input_summary`, `output_summary`, `status`, `error_message`.
 
 **Materialized views** refreshed every 5 minutes by a background `asyncio` task:
+
 - `daily_review_metrics` — per-day: review count, total cost, p50/p95 latency, acceptance rates.
 
 **Dashboard endpoints** (`/observability/*`) are protected by `PERCHLY_OBSERVABILITY_API_KEY` (header `X-Api-Key` or `Authorization: Bearer <key>`).
@@ -338,12 +314,12 @@ Span fields: `review_run_id`, `repository`, `pr_number`, `head_sha`, `agent`, `p
 
 Every finding's final outcome is stored in `outcome_examples`:
 
-| Path | Outcome |
-|---|---|
-| Auto-posted | `approved` |
-| Approved in queue | `approved` |
-| Edited in queue | `edited` |
-| Rejected in queue | `rejected` |
+| Path                              | Outcome     |
+| --------------------------------- | ----------- |
+| Auto-posted                       | `approved`  |
+| Approved in queue                 | `approved`  |
+| Edited in queue                   | `edited`    |
+| Rejected in queue                 | `rejected`  |
 | GitHub review dismissed (webhook) | `dismissed` |
 
 Before each specialist agent runs, a small number of similar past findings (retrieved by vector similarity of the finding's embedding) are prepended as few-shot calibration examples. The agent prompt instructs it not to copy findings — only to calibrate confidence based on what kinds of findings were accepted vs. rejected in the past.
@@ -437,60 +413,60 @@ daily_review_metrics (day, total_reviews, total_cost_usd, avg_cost_per_review_us
 
 ### Webhook
 
-| Method | Path | Auth | Description |
-|---|---|---|---|
+| Method | Path               | Auth     | Description               |
+| ------ | ------------------ | -------- | ------------------------- |
 | `POST` | `/webhooks/github` | HMAC sig | Receive GitHub App events |
 
 ### Review Queue
 
-| Method | Path | Body | Description |
-|---|---|---|---|
-| `GET` | `/reviews/queue` | — | List pending queue items |
-| `GET` | `/reviews/queue/{id}` | — | Get one queue item |
-| `POST` | `/reviews/queue/{id}/approve` | `{reviewer, comment?}` | Approve and post |
-| `POST` | `/reviews/queue/{id}/reject` | `{reviewer, comment?}` | Reject without posting |
-| `POST` | `/reviews/queue/{id}/edit` | `{reviewer, comment?, edited_review}` | Post edited version |
+| Method | Path                          | Body                                  | Description              |
+| ------ | ----------------------------- | ------------------------------------- | ------------------------ |
+| `GET`  | `/reviews/queue`              | —                                     | List pending queue items |
+| `GET`  | `/reviews/queue/{id}`         | —                                     | Get one queue item       |
+| `POST` | `/reviews/queue/{id}/approve` | `{reviewer, comment?}`                | Approve and post         |
+| `POST` | `/reviews/queue/{id}/reject`  | `{reviewer, comment?}`                | Reject without posting   |
+| `POST` | `/reviews/queue/{id}/edit`    | `{reviewer, comment?, edited_review}` | Post edited version      |
 
-### Observability *(requires `X-Api-Key` or `Authorization: Bearer <key>`)*
+### Observability _(requires `X-Api-Key` or `Authorization: Bearer <key>`)_
 
-| Method | Path | Query | Description |
-|---|---|---|---|
-| `GET` | `/observability/overview` | `days=14` | Volume, cost, latency, queue, acceptance |
-| `GET` | `/observability/traces` | `repository`, `agent`, `pr_number`, `head_sha`, `since`, `until`, `limit=50` | List review runs |
-| `GET` | `/observability/traces/{review_run_id}` | — | Single trace with all spans |
+| Method | Path                                    | Query                                                                        | Description                              |
+| ------ | --------------------------------------- | ---------------------------------------------------------------------------- | ---------------------------------------- |
+| `GET`  | `/observability/overview`               | `days=14`                                                                    | Volume, cost, latency, queue, acceptance |
+| `GET`  | `/observability/traces`                 | `repository`, `agent`, `pr_number`, `head_sha`, `since`, `until`, `limit=50` | List review runs                         |
+| `GET`  | `/observability/traces/{review_run_id}` | —                                                                            | Single trace with all spans              |
 
 ### Health
 
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/` | Returns `{"message": "Everything ok"}` |
+| Method | Path | Description                            |
+| ------ | ---- | -------------------------------------- |
+| `GET`  | `/`  | Returns `{"message": "Everything ok"}` |
 
 ---
 
 ## 6. Configuration Reference
 
-| Variable | Required | Default | Description |
-|---|---|---|---|
-| `GITHUB_APP_ID` | ✅ | — | GitHub App numeric ID |
-| `GITHUB_WEBHOOK_SECRET` | ✅ | — | Shared webhook HMAC secret |
-| `GITHUB_PRIVATE_KEY_PATH` | ✅ | — | Path to the `.pem` private key file |
-| `GEMINI_API_KEY` | ✅ | — | Google Gemini API key |
-| `DATABASE_URL` | ✅ | — | PostgreSQL connection string (`postgresql://...?sslmode=require`) |
-| `TEMPORAL_ADDRESS` | ✅ | `localhost:7233` | Temporal server gRPC address |
-| `TEMPORAL_TASK_QUEUE` | ✅ | `perchly-reviews` | Temporal task queue name |
-| `PERCHLY_OBSERVABILITY_API_KEY` | ✅ | — | Secret key for `/observability/*` |
-| `GEMINI_MODEL` | — | `gemini-3.8-flash` | Gemini generation model |
-| `GEMINI_EMBEDDING_MODEL` | — | `gemini-embedding-2` | Gemini embedding model |
-| `EMBEDDING_DIMENSIONS` | — | `768` | Embedding vector dimensions |
-| `RETRIEVAL_TOP_K` | — | `5` | Chunks retrieved per specialist |
-| `PERCHLY_AUTO_POST_THRESHOLD` | — | `0.90` | Minimum confidence for direct posting |
-| `PERCHLY_SECURITY_AUTO_POST_THRESHOLD` | — | `0.95` | Stricter threshold for security |
-| `PERCHLY_MAX_AUTO_POST_FINDINGS` | — | `20` | Max findings before routing to HITL |
-| `PERCHLY_DATA_DIRECTORY` | — | `data/` | Local data directory |
-| `PERCHLY_OTEL_CONSOLE_EXPORT` | — | `false` | Print OTEL spans to stdout (dev only) |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | — | — | Optional OTLP/HTTP endpoint (Grafana Tempo, Jaeger) |
-| `NGROK_AUTHTOKEN` | — | — | ngrok auth token for tunnel |
-| `NGROK_DOMAIN` | — | ephemeral | Reserved ngrok domain |
+| Variable                               | Required | Default              | Description                                                       |
+| -------------------------------------- | -------- | -------------------- | ----------------------------------------------------------------- |
+| `GITHUB_APP_ID`                        | ✅       | —                    | GitHub App numeric ID                                             |
+| `GITHUB_WEBHOOK_SECRET`                | ✅       | —                    | Shared webhook HMAC secret                                        |
+| `GITHUB_PRIVATE_KEY_PATH`              | ✅       | —                    | Path to the `.pem` private key file                               |
+| `GEMINI_API_KEY`                       | ✅       | —                    | Google Gemini API key                                             |
+| `DATABASE_URL`                         | ✅       | —                    | PostgreSQL connection string (`postgresql://...?sslmode=require`) |
+| `TEMPORAL_ADDRESS`                     | ✅       | `localhost:7233`     | Temporal server gRPC address                                      |
+| `TEMPORAL_TASK_QUEUE`                  | ✅       | `perchly-reviews`    | Temporal task queue name                                          |
+| `PERCHLY_OBSERVABILITY_API_KEY`        | ✅       | —                    | Secret key for `/observability/*`                                 |
+| `GEMINI_MODEL`                         | —        | `gemini-3.8-flash`   | Gemini generation model                                           |
+| `GEMINI_EMBEDDING_MODEL`               | —        | `gemini-embedding-2` | Gemini embedding model                                            |
+| `EMBEDDING_DIMENSIONS`                 | —        | `768`                | Embedding vector dimensions                                       |
+| `RETRIEVAL_TOP_K`                      | —        | `5`                  | Chunks retrieved per specialist                                   |
+| `PERCHLY_AUTO_POST_THRESHOLD`          | —        | `0.90`               | Minimum confidence for direct posting                             |
+| `PERCHLY_SECURITY_AUTO_POST_THRESHOLD` | —        | `0.95`               | Stricter threshold for security                                   |
+| `PERCHLY_MAX_AUTO_POST_FINDINGS`       | —        | `20`                 | Max findings before routing to HITL                               |
+| `PERCHLY_DATA_DIRECTORY`               | —        | `data/`              | Local data directory                                              |
+| `PERCHLY_OTEL_CONSOLE_EXPORT`          | —        | `false`              | Print OTEL spans to stdout (dev only)                             |
+| `OTEL_EXPORTER_OTLP_ENDPOINT`          | —        | —                    | Optional OTLP/HTTP endpoint (Grafana Tempo, Jaeger)               |
+| `NGROK_AUTHTOKEN`                      | —        | —                    | ngrok auth token for tunnel                                       |
+| `NGROK_DOMAIN`                         | —        | ephemeral            | Reserved ngrok domain                                             |
 
 ---
 
@@ -652,41 +628,19 @@ Agent-authored fix PRs (Phase 5) always target a human review step before merge.
 
 ## 10. Roadmap
 
-| Phase | Status | Description |
-|---|---|---|
-| **Phase 0** | ✅ Done | Webhook receiver, single generalist agent, direct posting |
-| **Phase 1** | ✅ Done | Four specialist agents, pgvector context retrieval |
-| **Phase 2** | ✅ Done | Temporal orchestration, retries, partial-failure handling |
-| **Phase 3** | ✅ Done | HITL queue, approval UI, decision persistence |
-| **Phase 4** | ✅ Done | OTel spans, Timescale aggregates, observability dashboard |
-| **Phase 5** | 🔜 Next | **Agent-authored fix PRs** — per-finding "Raise Fix PR" button; Perchly creates a branch from `head_sha`, applies `suggested_fix` to the affected line range, and opens a GitHub PR targeting the original PR's head branch |
-| **Phase 6** | ⬜ Planned | **Learning loop improvements** — outcome-weighted retrieval, confidence calibration tuning |
-| **Phase 7** | 🔄 In progress | **OSS polish** — this README, setup scripts, example repo, contribution guide |
+| Phase       | Status         | Description                                                                                                                                                                                                                 |
+| ----------- | -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Phase 0** | ✅ Done        | Webhook receiver, single generalist agent, direct posting                                                                                                                                                                   |
+| **Phase 1** | ✅ Done        | Four specialist agents, pgvector context retrieval                                                                                                                                                                          |
+| **Phase 2** | ✅ Done        | Temporal orchestration, retries, partial-failure handling                                                                                                                                                                   |
+| **Phase 3** | ✅ Done        | HITL queue, approval UI, decision persistence                                                                                                                                                                               |
+| **Phase 4** | ✅ Done        | OTel spans, Timescale aggregates, observability dashboard                                                                                                                                                                   |
+| **Phase 5** | 🔜 Next        | **Agent-authored fix PRs** — per-finding "Raise Fix PR" button; Perchly creates a branch from `head_sha`, applies `suggested_fix` to the affected line range, and opens a GitHub PR targeting the original PR's head branch |
+| **Phase 6** | ⬜ Planned     | **Learning loop improvements** — outcome-weighted retrieval, confidence calibration tuning                                                                                                                                  |
+| **Phase 7** | 🔄 In progress | **Docs & setup polish** — this README, setup scripts, cleaner install for new machines                                                                                                                                      |
 
 ---
 
-## 11. Contributing
-
-Contributions are welcome. Please follow these guidelines:
-
-1. **Open an issue first** for non-trivial changes to align on approach.
-2. **Fork → branch → PR** — branch naming: `feature/short-description` or `fix/short-description`.
-3. **Tests** — new code should have unit tests. Run `uv run pytest` before submitting.
-4. **No credentials in code** — all secrets via environment variables only.
-5. **Eval gate** — if you change a specialist agent prompt, run `uv run python -m app.evals.run` and include the output in your PR description.
-6. **Database writes** — any new PostgreSQL write must use the `_sql_literal` / `_run` helpers in `review_queue.py` or `telemetry.py`, not pg8000's parameterized `conn.run(query, **kwargs)` (see §9 for why).
-
-### Code style
-
-- **Python:** [Ruff](https://github.com/astral-sh/ruff) for linting and formatting.
-- **TypeScript:** ESLint + Prettier (configured in `web/`).
-
----
-
-## 12. License
+## 11. License
 
 MIT — see [LICENSE](LICENSE).
-
----
-
-<p align="center">Built with obsessive care by <a href="https://github.com/0x-rekt">0x-rekt</a></p>
