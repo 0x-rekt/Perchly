@@ -15,6 +15,7 @@ async function request<T>(
 ): Promise<T> {
   const response = await fetch(`${API}${path}`, {
     method: init?.method ?? "GET",
+    credentials: "include",
     headers: {
       Accept: "application/json",
       ...(OBSERVABILITY_KEY ? { "X-API-Key": OBSERVABILITY_KEY } : {}),

@@ -23,6 +23,13 @@ MAX_AUTO_POST_FINDINGS = int(os.getenv("PERCHLY_MAX_AUTO_POST_FINDINGS", "20"))
 DATA_DIRECTORY = Path(os.getenv("PERCHLY_DATA_DIRECTORY", "data"))
 OBSERVABILITY_API_KEY = os.getenv("PERCHLY_OBSERVABILITY_API_KEY")
 OTEL_EXPORTER_OTLP_ENDPOINT = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+GITHUB_OAUTH_CLIENT_ID = os.getenv("GITHUB_OAUTH_CLIENT_ID")
+GITHUB_OAUTH_CLIENT_SECRET = os.getenv("GITHUB_OAUTH_CLIENT_SECRET")
+GITHUB_OAUTH_REDIRECT_URI = os.getenv(
+    "GITHUB_OAUTH_REDIRECT_URI", "http://localhost:8000/auth/github/callback"
+)
+WEB_APP_URL = os.getenv("WEB_APP_URL", "http://localhost:5173")
+SESSION_SECRET = os.getenv("SESSION_SECRET")
 
 
 def github_app_credentials() -> tuple[str, Path]:
@@ -49,3 +56,9 @@ def database_url() -> str:
     if not DATABASE_URL:
         raise RuntimeError("DATABASE_URL must be configured")
     return DATABASE_URL
+
+
+def session_secret() -> str:
+    if not SESSION_SECRET or len(SESSION_SECRET) < 32:
+        raise RuntimeError("SESSION_SECRET must be configured with at least 32 characters")
+    return SESSION_SECRET

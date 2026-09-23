@@ -3,12 +3,16 @@ from contextlib import asynccontextmanager
 import logging
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.logging import configure_logging
 from app.routers.github_webhooks import router as github_webhook_router
+from app.routers.auth import router as auth_router
 from app.routers.observability import router as observability_router
 from app.routers.reviews import router as reviews_router
 from app.services import telemetry
+from app.core.config import WEB_APP_URL
+from app.services.tenant_store import initialize_schema as initialize_tenant_schema
 from app.temporal.client import close_temporal_client, initialize_temporal_client
 
 configure_logging()
@@ -38,6 +42,7 @@ async def lifespan(_: FastAPI):
     try:
         await asyncio.to_thread(telemetry.initialize_schema)
         await asyncio.to_thread(telemetry.refresh_aggregates)
+        await asyncio.to_thread(initialize_tenant_schema)
         aggregate_task = asyncio.create_task(_aggregate_refresh_loop())
     except Exception:
         logger.warning("Telemetry schema initialisation failed; spans will not be persisted", exc_info=True)
@@ -51,7 +56,15 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="perchly PR Review Agent", lifespan=lifespan)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=sorted({WEB_APP_URL.rstrip("/"), "http://localhost:5173", "http://127.0.0.1:5173"}),
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Accept", "Content-Type", "X-API-Key", "Authorization"],
+)
 app.include_router(github_webhook_router)
+app.include_router(auth_router)
 app.include_router(observability_router)
 app.include_router(reviews_router)
 
