@@ -64,3 +64,43 @@ def test_webhook_starts_temporal_workflow(monkeypatch) -> None:
     assert result == {"status": "accepted", "delivery_id": "delivery-91"}
     assert started["repository"] == "acme/repo"
     assert started["head_sha"] == "sha-91"
+
+
+def test_issue_comment_deletion_records_dismissed_outcome(monkeypatch) -> None:
+    body = json.dumps({
+        "action": "deleted",
+        "repository": {"full_name": "acme/repo"},
+        "issue": {"number": 91},
+        "comment": {
+            "body": "<!-- perchly-review:acme/repo:91:sha-91 -->\nreview"
+        },
+    }).encode()
+    recorded = {}
+
+    async def fake_record(**kwargs):
+        recorded.update(kwargs)
+        return 2
+
+    async def request_body():
+        return body
+
+    request = Request({"type": "http", "method": "POST", "path": "/webhooks/github", "headers": []})
+    request.body = request_body
+    monkeypatch.setattr(github_webhooks, "GITHUB_WEBHOOK_SECRET", "test-secret")
+    monkeypatch.setattr(github_webhooks, "valid_github_signature", lambda **kwargs: True)
+    monkeypatch.setattr(github_webhooks.review_queue, "record_external_outcome", fake_record)
+
+    result = asyncio.run(github_webhooks.receive_github_events(
+        request,
+        x_github_event="issue_comment",
+        x_github_delivery="delivery-comment-91",
+        x_hub_signature_256="ignored-in-test",
+    ))
+
+    assert result == {"status": "recorded", "outcome": "dismissed", "examples": "2"}
+    assert recorded == {
+        "repository": "acme/repo",
+        "pr_number": 91,
+        "head_sha": "sha-91",
+        "final_outcome": "dismissed",
+    }

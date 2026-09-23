@@ -9,6 +9,9 @@ def test_golden_dataset_has_security_and_safe_cases() -> None:
     assert any(case["expected_findings"] for case in cases)
     assert any(not case["expected_findings"] for case in cases)
     assert all(case["diff"] for case in cases)
+    learning_cases = [case for case in cases if case.get("historical_outcomes")]
+    assert learning_cases
+    assert all(case.get("specialist_category") for case in learning_cases)
 
 
 def test_gate_requires_expected_coverage_and_no_unexpected_findings() -> None:

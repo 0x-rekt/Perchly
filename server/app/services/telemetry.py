@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import asyncio
 import functools
@@ -397,12 +397,25 @@ def overview_metrics(days: int = 14) -> dict[str, Any]:
                 """
             )
         )
+        learning_rows.append(
+            safe(
+                """
+                SELECT final_outcome, count(*)::integer
+                FROM outcome_examples
+                WHERE created_at >= CURRENT_TIMESTAMP - (%s * INTERVAL '1 day')
+                GROUP BY final_outcome
+                ORDER BY final_outcome
+                """,
+                (days,),
+            )
+        )
 
     per_day_rows: list[list[list[Any]]] = []
     cost_rows: list[list[list[Any]]] = []
     latency_rows: list[list[list[Any]]] = []
     queue_rows: list[list[list[Any]]] = []
     acceptance_rows: list[list[list[Any]]] = []
+    learning_rows: list[list[list[Any]]] = []
 
     _execute(operation)
     per_day_rows = per_day_rows[0]
@@ -410,6 +423,7 @@ def overview_metrics(days: int = 14) -> dict[str, Any]:
     latency_rows = latency_rows[0]
     queue_rows = queue_rows[0]
     acceptance_rows = acceptance_rows[0]
+    learning_rows = learning_rows[0]
 
     reviews_per_day = [
         {"day": row[0].isoformat(), "reviews": int(row[1])} for row in per_day_rows
@@ -447,6 +461,10 @@ def overview_metrics(days: int = 14) -> dict[str, Any]:
         }
         for row in acceptance_rows
     ]
+    learning_outcomes = [
+        {"outcome": row[0], "count": int(row[1])}
+        for row in learning_rows
+    ]
 
     return {
         "window_days": days,
@@ -460,6 +478,7 @@ def overview_metrics(days: int = 14) -> dict[str, Any]:
         "latency_by_phase": latency_by_phase,
         "hitl_queue": hitl_queue,
         "acceptance_rate_by_category": acceptance_by_category,
+        "learning_outcomes": learning_outcomes,
     }
 
 
@@ -1031,33 +1050,68 @@ def _is_stale_session(exc: BaseException) -> bool:
 
 
 def _execute(operation: Callable[[Any], Any], *, timeout: int = 10) -> Any:
-    """Run one DB operation, retrying once with a fresh connection.
+    """Run one DB operation, retrying with fresh connections.
 
     Every operation uses its own short-lived connection, so the Neon
     transaction-mode pooler recycling a session (which drops pg8000's
     extended-protocol prepared statements, SQLSTATE 26000) is always
     recovered simply by connecting again.
     """
-    for attempt in range(2):
+    # Transaction poolers can hand out more than one backend whose unnamed
+    # prepared statement state was discarded. Three fresh sessions avoids
+    # losing telemetry when a pooler is recycling connections under load.
+    for attempt in range(3):
         conn = _connect() if timeout == 10 else _connect(timeout=timeout)
         try:
             return operation(conn)
         except Exception as exc:
-            if attempt == 1 or not _is_stale_session(exc):
+            if attempt == 2 or not _is_stale_session(exc):
                 raise
             logger.warning(
                 "db session recycled, reconnecting (attempt %d): %s",
                 attempt + 1,
                 exc,
             )
+            time.sleep(0.1 * (attempt + 1))
         finally:
-            conn.close()
+            # Pooler-recycled sockets can fail during close after a successful
+            # query. Telemetry cleanup must never mask the operation result.
+            try:
+                conn.close()
+            except Exception:
+                logger.debug("Ignoring stale telemetry connection during cleanup", exc_info=True)
     return None  # unreachable
 
 
+def _sql_literal(value: Any) -> str:
+    """Encode a Python value as a safe SQL literal for the simple protocol."""
+    if value is None:
+        return "NULL"
+    if isinstance(value, bool):
+        return "TRUE" if value else "FALSE"
+    if isinstance(value, (int, float, Decimal)):
+        return str(value)
+    if isinstance(value, datetime):
+        value = value.isoformat()
+    elif not isinstance(value, str):
+        raise TypeError(f"unsupported SQL parameter type: {type(value).__name__}")
+    if "\x00" in value:
+        raise ValueError("SQL parameters cannot contain NUL bytes")
+    return "'" + value.replace("'", "''") + "'"
+
+
 def _run(conn, query: str, parameters: tuple[Any, ...] = ()) -> list[list[Any]]:
-    import re
-    names = iter(f"param_{i}" for i in range(len(parameters)))
-    query = re.sub(r"%s", lambda _: f":{next(names)}", query)
-    values = {f"param_{i}": v for i, v in enumerate(parameters)}
-    return conn.run(query, **values)
+    """Execute with PostgreSQL's simple-query protocol.
+
+    The cloud database uses transaction pooling, which can route pg8000's
+    extended-protocol Parse/Describe/Bind messages to different backends and
+    produces SQLSTATE 26000. Values are encoded as strict SQL literals so the
+    simple protocol remains safe while avoiding unnamed prepared statements.
+    """
+    values = iter(parameters)
+    rendered = re.sub(r"%s", lambda _: _sql_literal(next(values)), query)
+    try:
+        next(values)
+    except StopIteration:
+        return conn.run(rendered)
+    raise ValueError("query contains fewer placeholders than supplied parameters")

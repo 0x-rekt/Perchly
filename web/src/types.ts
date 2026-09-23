@@ -52,6 +52,7 @@ export type AcceptanceByCategory = {
   accepted: number;
   acceptance_rate: number;
 };
+export type LearningOutcome = { outcome: string; count: number };
 export type OverviewMetrics = {
   window_days: number;
   reviews_per_day: ReviewsPerDay[];
@@ -64,6 +65,7 @@ export type OverviewMetrics = {
   latency_by_phase: LatencyByPhase[];
   hitl_queue: { depth: number; median_age_minutes: number };
   acceptance_rate_by_category: AcceptanceByCategory[];
+  learning_outcomes: LearningOutcome[];
 };
 
 export type TraceSummary = {

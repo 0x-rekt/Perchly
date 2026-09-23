@@ -1,3 +1,4 @@
+import json
 import logging
 from typing import Annotated
 
@@ -9,12 +10,14 @@ from app.temporal.client import start_review_workflow
 from app.temporal.workflows import ReviewWorkflowInput
 from app.services.idempotency import IdempotencyStore
 from app.services.github_webhooks import valid_github_signature
+from app.services.review_queue import ReviewQueueService
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/webhooks", tags=["github"])
 
 SUPPORTED_PULL_REQUEST_ACTIONS = frozenset({"opened", "reopened", "synchronize"})
 idempotency_store = IdempotencyStore()
+review_queue = ReviewQueueService()
 
 
 def is_supported_pull_request_action(action: str) -> bool:
@@ -40,6 +43,55 @@ async def receive_github_events(
         webhook_secret=GITHUB_WEBHOOK_SECRET,
     ):
         raise HTTPException(status_code=401, detail="Invalid webhook signature")
+
+    if x_github_event in {
+        "pull_request_review",
+        "pull_request_review_comment",
+        "pull_request_review_thread",
+        "issue_comment",
+    }:
+        try:
+            event = json.loads(raw_body)
+        except json.JSONDecodeError as error:
+            raise HTTPException(status_code=400, detail="Invalid GitHub event payload") from error
+        action = event.get("action")
+        outcome = {
+            "dismissed": "dismissed",
+            "resolved": "resolved",
+            "deleted": "dismissed",
+        }.get(action)
+        body = ""
+        for key in ("review", "comment"):
+            value = event.get(key)
+            if isinstance(value, dict) and isinstance(value.get("body"), str):
+                body = value["body"]
+                break
+        pull_request = event.get("pull_request") or {}
+        repository = event.get("repository") or {}
+        head = pull_request.get("head") or {}
+        if x_github_event == "issue_comment" and "<!-- perchly-review:" in body:
+            marker = body.split("<!-- perchly-review:", 1)[1].split("-->", 1)[0].strip()
+            marker_parts = marker.rsplit(":", 2)
+            if len(marker_parts) == 3:
+                repository_name, marker_pr, marker_sha = marker_parts
+                repository = {"full_name": repository_name}
+                pull_request = {"number": int(marker_pr) if marker_pr.isdigit() else None}
+                head = {"sha": marker_sha}
+        if (
+            outcome is None
+            or "<!-- perchly-review:" not in body
+            or not isinstance(repository.get("full_name"), str)
+            or not isinstance(pull_request.get("number"), int)
+            or not isinstance(head.get("sha"), str)
+        ):
+            return {"status": "ignored", "reason": "unsupported outcome event"}
+        count = await review_queue.record_external_outcome(
+            repository=repository["full_name"],
+            pr_number=pull_request["number"],
+            head_sha=head["sha"],
+            final_outcome=outcome,
+        )
+        return {"status": "recorded", "outcome": outcome, "examples": str(count)}
 
     if x_github_event != "pull_request":
         return {"status": "ignored", "reason": "unsupported event"}

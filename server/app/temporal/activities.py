@@ -1,3 +1,4 @@
+import asyncio
 from typing import Any
 
 from temporalio import activity
@@ -13,10 +14,13 @@ from app.services.github_api import (
 from app.services.retrieval import RetrievalService
 from app.services.routing import route_review
 from app.services.review_queue import ReviewQueueService
+from app.services.outcome_retrieval import embed_pending_outcomes
+from app.services.outcome_retrieval import find_similar_outcomes
 from app.services.specialist_runner import SpecialistRunResult
 from app.services.telemetry import ReviewContext, instrument_activity
 from app.agents import SPECIALIST_AGENTS
 from app.workers.review import format_aggregated_review_comment
+from app.schemas.findings import assign_finding_ids
 
 
 @activity.defn
@@ -78,7 +82,31 @@ async def retrieve_repository_context(
         repository_files=repository_files,
         telemetry_ctx=ctx,
     )
-    return {**fetched, "contexts": contexts}
+    historical_outcomes: dict[str, list[dict[str, Any]]] = {}
+    categories = tuple(contexts)
+    results = await asyncio.gather(
+        *(
+            find_similar_outcomes(
+                repository=fetched["repository"],
+                category=category,
+                finding={
+                    "category": category,
+                    "message": fetched["diff"][:4000],
+                },
+                limit=5,
+            )
+            for category in categories
+        ),
+        return_exceptions=True,
+    )
+    for category, result in zip(categories, results, strict=True):
+        if isinstance(result, BaseException):
+            # Historical examples are optional context; a database/API failure
+            # must not prevent the current review from running.
+            historical_outcomes[category] = []
+        else:
+            historical_outcomes[category] = result
+    return {**fetched, "contexts": contexts, "historical_outcomes": historical_outcomes}
 
 
 @activity.defn
@@ -100,6 +128,7 @@ async def run_specialist(payload: dict[str, Any]) -> dict[str, Any]:
         description=retrieved["description"],
         diff=retrieved["diff"],
         retrieved_context=retrieved["contexts"].get(category, ""),
+        historical_outcomes=retrieved.get("historical_outcomes", {}).get(category, []),
         telemetry_ctx=ctx,
     )
     return {"category": category, "review": review.model_dump()}
@@ -132,8 +161,14 @@ async def aggregate_review(
         failures=specialist_payload["specialist_failures"],
     )
     aggregated = aggregate_specialist_results(result)
+    findings = assign_finding_ids(
+        aggregated.findings,
+        repository=specialist_payload["repository"],
+        pr_number=specialist_payload["pr_number"],
+        head_sha=specialist_payload["head_sha"],
+    )
     return {
-        "findings": [finding.model_dump() for finding in aggregated.findings],
+        "findings": [finding.model_dump() for finding in findings],
         "failures": aggregated.failures,
     }
 
@@ -174,7 +209,7 @@ async def route_aggregated_review(review: dict[str, Any]) -> dict[str, Any]:
 @instrument_activity(phase="persistence")
 async def persist_automatic_decision(payload: dict[str, Any]) -> int:
     fetched = payload["fetched"]
-    return await ReviewQueueService().record_automatic_decision(
+    result = await ReviewQueueService().record_automatic_decision(
         delivery_id=fetched["delivery_id"],
         repository=fetched["repository"],
         pr_number=fetched["pr_number"],
@@ -182,15 +217,19 @@ async def persist_automatic_decision(payload: dict[str, Any]) -> int:
         review_payload=payload["review"],
         reason=payload["reason"],
     )
+    await embed_pending_outcomes()
+    return result
 
 
 @activity.defn
 @instrument_activity(phase="persistence")
 async def persist_reviewer_decision(payload: dict[str, Any]) -> int:
-    return await ReviewQueueService().record_reviewer_decision(
+    result = await ReviewQueueService().record_reviewer_decision(
         queue_item_id=payload["queue_item_id"],
         decision=payload["decision"],
     )
+    await embed_pending_outcomes()
+    return result
 
 
 @activity.defn
@@ -203,10 +242,17 @@ async def validate_edited_review(payload: dict[str, Any]) -> dict[str, Any]:
     failures = review.get("failures", {})
     if not isinstance(failures, dict):
         raise ValueError("edited review failures must be an object")
+    findings = [
+        _finding_result(entry) for entry in review["findings"]
+    ]
+    findings = assign_finding_ids(
+        findings,
+        repository=payload["repository"],
+        pr_number=payload["pr_number"],
+        head_sha=payload["head_sha"],
+    )
     return {
-        "findings": [finding.model_dump() for finding in (
-            _finding_result(entry) for entry in review["findings"]
-        )],
+        "findings": [finding.model_dump() for finding in findings],
         "failures": {str(key): str(value) for key, value in failures.items()},
     }
 

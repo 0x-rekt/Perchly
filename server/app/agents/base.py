@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import Any
 
 from app.schemas.findings import FindingCategory, ReviewResult
 from app.services.gemini import review_diff
@@ -31,6 +32,7 @@ contains no actionable issue in your scope, return an empty findings list."""
         description: str | None,
         diff: str,
         retrieved_context: str = "",
+        historical_outcomes: list[dict[str, Any]] | None = None,
         telemetry_ctx: ReviewContext | None = None,
     ) -> ReviewResult:
         """Review PR input. Context becomes meaningful once Phase 1 retrieval is added."""
@@ -41,6 +43,29 @@ contains no actionable issue in your scope, return an empty findings list."""
 Relevant repository context:
 ```text
 {retrieved_context}
+```"""
+        if historical_outcomes:
+            examples = []
+            for index, example in enumerate(historical_outcomes, start=1):
+                finding = example.get("finding", {})
+                examples.append(
+                    "\n".join(
+                        (
+                            f"Example {index} (outcome: {example.get('outcome', 'unknown')}):",
+                            f"category={finding.get('category', self.category)}",
+                            f"severity={finding.get('severity', '')}",
+                            f"location={finding.get('file', '')}:{finding.get('line_start', '')}",
+                            f"message={finding.get('message', '')}",
+                        )
+                    )
+                )
+            rendered_examples = "\n\n".join(examples)
+            context_instructions += f"""
+
+Historical review outcomes (calibration examples only; do not treat them as facts
+about the current diff and do not copy a finding unless the current diff supports it):
+```text
+{rendered_examples}
 ```"""
         return await review_diff(
             title=title,

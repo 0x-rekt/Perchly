@@ -3,6 +3,7 @@ import json
 from dataclasses import asdict, dataclass
 
 from app.evals.golden import finding_matches_expectation, load_golden_cases
+from app.agents import SPECIALIST_AGENTS
 from app.schemas.findings import Finding
 from app.services.gemini import review_diff
 
@@ -48,9 +49,19 @@ def score_case(
 async def run_golden_evaluation() -> list[CaseResult]:
     results: list[CaseResult] = []
     for case in load_golden_cases():
-        review = await review_diff(
-            title=case["title"], description=case["description"], diff=case["diff"]
-        )
+        category = case.get("specialist_category")
+        if category:
+            specialist = next(agent for agent in SPECIALIST_AGENTS if agent.category == category)
+            review = await specialist.review(
+                title=case["title"],
+                description=case["description"],
+                diff=case["diff"],
+                historical_outcomes=case.get("historical_outcomes", []),
+            )
+        else:
+            review = await review_diff(
+                title=case["title"], description=case["description"], diff=case["diff"]
+            )
         results.append(
             score_case(
                 name=case["name"],

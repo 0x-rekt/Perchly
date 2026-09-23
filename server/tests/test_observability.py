@@ -31,6 +31,8 @@ def test_overview_metrics_maps_rows(monkeypatch: pytest.MonkeyPatch) -> None:
             return [[Decimal("0.75"), 5]]
         if "jsonb_array_elements" in query:
             return [["security", 4, 3]]
+        if "FROM outcome_examples" in query:
+            return [["auto_post", 3], ["rejected", 1]]
         raise AssertionError(f"unexpected query: {query[:120]}")
 
     monkeypatch.setattr(telemetry, "_connect", _make_conn)

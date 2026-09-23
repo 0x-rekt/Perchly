@@ -163,6 +163,14 @@ export function Overview({
             />
             <AcceptanceTable rows={overview.acceptance_rate_by_category} />
           </section>
+
+          <section className="panel table-panel" aria-label="Learning outcomes">
+            <PanelHeading
+              title="Learning outcomes"
+              meta="Finding outcomes used for future calibration"
+            />
+            <LearningOutcomeTable rows={overview.learning_outcomes} />
+          </section>
         </div>
       )}
     </div>
@@ -305,6 +313,32 @@ function AcceptanceTable({ rows }: { rows: OverviewMetrics["acceptance_rate_by_c
           </div>
         </div>
       ))}
+    </div>
+  );
+}
+
+function LearningOutcomeTable({ rows }: { rows: OverviewMetrics["learning_outcomes"] }) {
+  if (rows.length === 0) {
+    return <p className="table-null">No learning outcomes recorded yet.</p>;
+  }
+  return (
+    <div className="data-table-wrap">
+      <table className="data-table">
+        <thead>
+          <tr>
+            <th>Outcome</th>
+            <th className="num">Findings</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr key={row.outcome}>
+              <td className="mono">{titleCase(row.outcome)}</td>
+              <td className="num">{row.count}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }
