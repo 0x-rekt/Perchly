@@ -1,0 +1,692 @@
+# Perchly
+
+**An open-source AI pull-request review agent — four specialist agents, one structured review, human-in-the-loop safety, and full observability.**
+
+[![GitHub](https://img.shields.io/badge/repo-0x--rekt%2FPerchly-181717?logo=github)](https://github.com/0x-rekt/Perchly)
+[![License: MIT](https://img.shields.io/badge/license-MIT-brightgreen)](#license)
+[![Python](https://img.shields.io/badge/python-3.14-blue?logo=python)](https://python.org)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.141-009688?logo=fastapi)](https://fastapi.tiangolo.com)
+[![Temporal](https://img.shields.io/badge/Temporal-1.33-8358FF)](https://temporal.io)
+
+---
+
+## What is Perchly?
+
+Perchly hooks into your GitHub repository via a GitHub App. Every time a pull request is opened or updated, four LLM specialist agents run in parallel — covering **security**, **code quality**, **test coverage**, and **documentation** — and post a single structured review back to the PR. Findings that don't meet the configured confidence threshold are held in a **human-in-the-loop approval queue** instead of being posted automatically.
+
+Every agent action, LLM call, and human decision is recorded as a span in a queryable PostgreSQL table. A live dashboard surfaces cost per review, latency by phase, HITL queue depth, and per-category acceptance rates.
+
+**This is a portfolio-grade, production-ready system.** It is not a prompt wrapper. It demonstrates: multi-agent orchestration, RAG over code, durable human-in-the-loop with Temporal signals, vector retrieval with pgvector, real OpenTelemetry observability, and confidence-based safety routing.
+
+---
+
+## Table of Contents
+
+1. [Quick Start (Docker)](#1-quick-start-docker)
+2. [High-Level Design (HLD)](#2-high-level-design-hld)
+3. [Low-Level Design (LLD)](#3-low-level-design-lld)
+   - [3.1 Webhook Ingestion](#31-webhook-ingestion)
+   - [3.2 Temporal Workflow](#32-temporal-workflow)
+   - [3.3 Context Retrieval](#33-context-retrieval)
+   - [3.4 Specialist Agents](#34-specialist-agents)
+   - [3.5 Aggregation & Routing](#35-aggregation--routing)
+   - [3.6 HITL Queue](#36-hitl-queue)
+   - [3.7 Observability](#37-observability)
+   - [3.8 Learning Loop](#38-learning-loop)
+4. [Data Model](#4-data-model)
+5. [API Reference](#5-api-reference)
+6. [Configuration Reference](#6-configuration-reference)
+7. [Local Development](#7-local-development)
+8. [Project Structure](#8-project-structure)
+9. [Architecture Decisions](#9-architecture-decisions)
+10. [Roadmap](#10-roadmap)
+11. [Contributing](#11-contributing)
+12. [License](#12-license)
+
+---
+
+## 1. Quick Start (Docker)
+
+### Prerequisites
+
+| Requirement | Notes |
+|---|---|
+| Docker + Docker Compose | v2.20+ recommended |
+| GitHub App | [Create one](https://docs.github.com/en/apps/creating-github-apps/creating-github-apps/creating-a-github-app) with `Pull requests: Read & Write`, `Contents: Read & Write`, `Checks: Read & Write`, webhooks for `pull_request` and `pull_request_review` events |
+| Gemini API key | [Google AI Studio](https://aistudio.google.com) |
+| Cloud PostgreSQL with pgvector | [Neon](https://neon.tech) free tier works. Enable the `vector` extension. |
+| ngrok account (optional) | For exposing the webhook endpoint locally |
+
+### Steps
+
+**1. Clone and configure**
+
+```bash
+git clone https://github.com/0x-rekt/Perchly.git
+cd Perchly
+cp .env.docker.example .env
+```
+
+Edit `.env` with your credentials (see [§6 Configuration](#6-configuration-reference)).
+
+**2. Add your GitHub App private key**
+
+```bash
+cp /path/to/your-github-app.private-key.pem server/perchly.private-key.pem
+```
+
+Update `GITHUB_PRIVATE_KEY_PATH=/app/perchly.private-key.pem` in `.env`.
+
+**3. Start all services**
+
+```bash
+docker compose up -d
+```
+
+This starts:
+- `perchly-server` — FastAPI backend on `:8000`
+- `perchly-worker` — Temporal activity worker
+- `perchly-temporal` — Temporal dev server on `:7233` (UI on `:8233`)
+- `perchly-web` — React console on `:5173`
+- `perchly-ngrok` — ngrok tunnel (configure `NGROK_DOMAIN` for a reserved domain)
+
+**4. Register the webhook**
+
+Set your GitHub App's webhook URL to your ngrok URL:
+```
+https://<your-subdomain>.ngrok-free.app/webhooks/github
+```
+
+**5. Install the App on a repo and open a PR — Perchly will review it.**
+
+---
+
+## 2. High-Level Design (HLD)
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                              GitHub                                      │
+│   PR open / synchronize / review events                                  │
+└───────────────────────────────┬─────────────────────────────────────────┘
+                                │ webhook (HMAC-verified)
+                                ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    FastAPI Server  (:8000)                               │
+│                                                                          │
+│  POST /webhooks/github  ──► verify sig ──► idempotency check            │
+│                                         └──► start Temporal workflow     │
+│  GET  /reviews/queue          (approval queue read)                      │
+│  POST /reviews/queue/{id}/approve|reject|edit                            │
+│  GET  /observability/overview|traces|traces/{id}                         │
+└───────────────────────────────┬─────────────────────────────────────────┘
+                                │ start workflow (durable)
+                                ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    Temporal Workflow  (per PR)                           │
+│                                                                          │
+│  1. fetch_review_context         diff + PR metadata via GitHub API       │
+│  2. retrieve_repository_context  embed + vector search (pgvector)        │
+│  3. run_specialist × 4                      ──── PARALLEL ────           │
+│       security │ quality │ test_coverage │ docs                         │
+│       each: Gemini tool-call loop → structured findings                 │
+│  4. aggregate_review    merge, deduplicate, assign finding IDs           │
+│  5. route_aggregated_review                                              │
+│       ├── [auto_post]       → post_review → GitHub PR comment           │
+│       └── [needs_approval]  → HITL queue                                │
+│                               workflow.wait_condition  ◄── Human signal │
+│                               approve / reject / edit                    │
+│                               → post_review (if approved/edited)        │
+└─────────────────────────────────┬───────────────────────────────────────┘
+                                  │ spans, findings, outcomes
+                                  ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                  Cloud PostgreSQL (Neon + pgvector)                      │
+│                                                                          │
+│  agent_spans          every LLM/tool call: cost, latency, tokens        │
+│  review_queue         HITL pending items                                 │
+│  review_decisions     approved / rejected / edited records               │
+│  outcome_examples     accepted/dismissed findings for few-shot retrieval │
+│  code_chunks          chunked repo files with pgvector embeddings        │
+│  daily_review_metrics materialized view for dashboard aggregates         │
+└─────────────────────────────────┬───────────────────────────────────────┘
+                                  │
+                                  ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    React Console  (:5173)                                │
+│                                                                          │
+│  Approval queue   scan findings, approve / reject / edit per item        │
+│  Overview         reviews/day, cost, latency, HITL depth, acceptance    │
+│  Review runs      per-PR traces with span-level drill-down              │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Technology Choices at a Glance
+
+| Layer | Technology | Why |
+|---|---|---|
+| Orchestration | **Temporal** (Python SDK 1.33) | Durable execution; native pause/resume via signals for HITL; per-activity retries and timeouts |
+| LLM | **Google Gemini** (`gemini-3.8-flash`) | Structured tool-use output for typed findings; co-located embedding API |
+| Embeddings | **Gemini Embedding** (`gemini-embedding-2`, 768d) | Code-aware embeddings; same API key as generation |
+| Vector store | **pgvector** on Neon PostgreSQL | Avoids a second database; same connection as queue and spans |
+| Webhook / API | **FastAPI** + uvicorn | Async, typed, pairs well with Temporal Python SDK |
+| Worker process | **uv** + Temporal activity worker | Separate process from API server; isolated failure domain |
+| Frontend | **React 19** + TypeScript + Vite + Tailwind | SPA proxied to the API; dark terminal aesthetic |
+| Tunnel | **ngrok** | Expose local webhook URL during development |
+| Containerisation | **Docker Compose** | Single-command local stack |
+
+---
+
+## 3. Low-Level Design (LLD)
+
+### 3.1 Webhook Ingestion
+
+**File:** [`server/app/routers/github_webhooks.py`](server/app/routers/github_webhooks.py)
+
+```
+POST /webhooks/github
+```
+
+1. **Signature verification** — HMAC-SHA256 over the raw request body using `GITHUB_WEBHOOK_SECRET`. Returns 401 if invalid.
+2. **Event filtering** — Only `pull_request` events with actions `opened`, `reopened`, `synchronize` are processed. Review and comment events are used for outcome tracking only.
+3. **Idempotency** — An in-process `IdempotencyStore` (keyed by `delivery_id + repository + pr_number + head_sha`) prevents duplicate Temporal workflows when GitHub retries a delivery.
+4. **Outcome tracking** — `pull_request_review`, `pull_request_review_comment`, and `issue_comment` events containing Perchly's HTML marker update `outcome_examples` with `merged`/`dismissed` signals.
+5. **Async hand-off** — Returns `202 Accepted` within milliseconds; all review work happens durably in Temporal.
+
+### 3.2 Temporal Workflow
+
+**File:** [`server/app/temporal/workflows.py`](server/app/temporal/workflows.py)
+
+One `ReviewWorkflow` instance per PR event, keyed by `perchly-review-{repo}-{pr_number}-{head_sha}`.
+
+```
+ReviewWorkflowInput
+  delivery_id, repository, pr_number, head_sha, installation_id
+
+Activity sequence:
+  fetch_review_context          (timeout 3m, max 3 retries)
+  retrieve_repository_context   (timeout 3m, max 3 retries)
+  run_specialist × 4            (timeout 2m each, max 2 retries, asyncio.gather)
+  aggregate_review              (timeout 3m, max 3 retries)
+  route_aggregated_review       (timeout 3m, max 3 retries)
+  ├── [auto_post]
+  │     post_review → persist_automatic_decision
+  └── [needs_approval]
+        workflow.wait_condition(decision is not None)   ← durable pause
+        ├── [approve/edit]
+        │     validate_edited_review? → post_review → persist_reviewer_decision
+        └── [reject]
+              persist_reviewer_decision  (no post)
+
+On any exception:
+  release_review_claim  (clears idempotency key so the PR can be re-reviewed)
+```
+
+**Signals** sent from the API server via `send_signal_by_workflow_id`:
+- `approve_review(ReviewDecisionInput)`
+- `reject_review(ReviewDecisionInput)`
+- `edit_review(ReviewDecisionInput)` — carries `edited_review` JSON
+
+**Query:** `status()` → `{state, decision}` — readable from the API without polling.
+
+### 3.3 Context Retrieval
+
+**File:** [`server/app/services/retrieval.py`](server/app/services/retrieval.py)
+
+Retrieval runs in two activities:
+
+**Stage 1 — Fetch** (`fetch_review_context`):
+- GitHub API: diff (`application/vnd.github.v3.diff`), PR title and body.
+- GitHub API: full text of each changed file at `head_sha`.
+- Relative-import graph walk — up to 20 related files are fetched for additional context.
+
+**Stage 2 — Embed & Query** (`retrieve_repository_context`):
+- Changed files are chunked (line-bounded, function-boundary-aware where possible).
+- Each chunk is embedded via Gemini Embedding API (768 dimensions).
+- Chunks are upserted into `code_chunks` + `embeddings` tables in PostgreSQL.
+- Top-K chunks (default 5) are retrieved per specialist agent's query vector.
+- Returned as a structured context string prepended to each specialist's system prompt.
+
+> **Note:** The index is incremental. Only files that appear in reviewed PRs are indexed. Unvisited files accumulate over time; no full-repo clone is required.
+
+### 3.4 Specialist Agents
+
+**Files:** [`server/app/agents/`](server/app/agents/)
+
+| Agent | Focus |
+|---|---|
+| `security` | Injection, auth/authz gaps, secret leakage, unsafe deserialization, dependency risk |
+| `quality` | Complexity, duplication, naming, dead code, anti-patterns |
+| `test_coverage` | Untested branches/functions introduced by the diff, missing edge cases |
+| `docs` | Missing/outdated docstrings, README/changelog drift, undocumented public API changes |
+
+Each agent is a `SpecialistAgent` dataclass with a category-scoped system prompt. The underlying `review_diff` call uses Gemini's structured tool-use API with the `Finding` Pydantic schema — no free-text parsing.
+
+```python
+# server/app/schemas/findings.py
+class Finding(BaseModel):
+    finding_id: str | None       # stable SHA-256 (repo, pr, sha, category, file, lines, message)
+    category: FindingCategory    # security | quality | test_coverage | docs
+    file: str
+    line_start: int
+    line_end: int
+    severity: FindingSeverity    # info | warning | critical
+    confidence: float            # 0.0 – 1.0
+    message: str
+    suggested_fix: str | None
+```
+
+All four agents run as **parallel Temporal activities** via `asyncio.gather(..., return_exceptions=True)`. A failure or timeout in one agent is recorded as a `specialist_failure` and does not block the others. If any agent fails, the aggregator routes the review to HITL.
+
+Historical outcome examples from the `outcome_examples` table are prepended as few-shot calibration context. The agent is instructed to use them only for confidence calibration, not to copy past findings.
+
+### 3.5 Aggregation & Routing
+
+**Files:** [`server/app/services/aggregation.py`](server/app/services/aggregation.py), [`server/app/services/routing.py`](server/app/services/routing.py)
+
+**Aggregation:**
+- Merges findings from all four agents.
+- Assigns stable `finding_id` (SHA-256 over `repo + pr + sha + category + file + lines + message`).
+- Deduplicates findings that share the same `finding_id`.
+
+**Routing policy:**
+
+| Condition | Route | Reason key |
+|---|---|---|
+| Any specialist failure | `needs_approval` | `specialist_failure` |
+| Any unresolved error | `needs_approval` | `unresolved_review_error` |
+| Finding count > `MAX_AUTO_POST_FINDINGS` | `needs_approval` | `finding_count_exceeds_auto_post_limit` |
+| Any critical security finding | `needs_approval` | `critical_security_finding` |
+| Any finding confidence < threshold | `needs_approval` | `finding_below_confidence_threshold` |
+| All conditions pass | `auto_post` | `all_findings_meet_policy` |
+
+Configurable thresholds:
+- `PERCHLY_AUTO_POST_THRESHOLD` (default `0.90`) — all categories
+- `PERCHLY_SECURITY_AUTO_POST_THRESHOLD` (default `0.95`) — security findings only
+- `PERCHLY_MAX_AUTO_POST_FINDINGS` (default `20`) — finding count cap
+
+### 3.6 HITL Queue
+
+**Files:** [`server/app/services/review_queue.py`](server/app/services/review_queue.py), [`server/app/routers/reviews.py`](server/app/routers/reviews.py)
+
+When routing returns `needs_approval`:
+
+1. The full review payload (findings, specialist failures, PR metadata) is persisted to `review_queue` in PostgreSQL.
+2. The Temporal workflow enters `workflow.wait_condition` — durably paused, survives worker restarts, waits indefinitely for a signal.
+3. The console's **Approval Queue** page (`GET /reviews/queue`) lists pending items with findings, confidence, severity, and suggested fixes.
+4. The reviewer clicks **Approve**, **Reject**, or **Edit** (with modified findings JSON).
+5. The API server sends the corresponding Temporal signal (`approve_review`, `reject_review`, `edit_review`).
+6. The workflow resumes, posts to GitHub (if approved or edited), records the decision, and completes.
+
+**Database protocol:** All writes use PostgreSQL's **simple-query protocol** — values are inlined as SQL literals via `_sql_literal()`. This is required because Neon's transaction-mode pooler routes pg8000's extended-protocol `Parse`/`Bind` messages to different backends, causing `SQLSTATE 26000`. Single-quote doubling is the only escaping needed (`standard_conforming_strings = on`).
+
+### 3.7 Observability
+
+**File:** [`server/app/services/telemetry.py`](server/app/services/telemetry.py)
+
+Every Temporal activity emits a span via `write_span_sync()`, stored in the `agent_spans` table (TimescaleDB hypertable when the extension is available, plain table otherwise).
+
+Span fields: `review_run_id`, `repository`, `pr_number`, `head_sha`, `agent`, `phase`, `span_type` (`llm_call` / `tool_call` / `retrieval`), `model`, `tokens_in`, `tokens_out`, `cost_usd`, `latency_ms`, `input_summary`, `output_summary`, `status`, `error_message`.
+
+**Materialized views** refreshed every 5 minutes by a background `asyncio` task:
+- `daily_review_metrics` — per-day: review count, total cost, p50/p95 latency, acceptance rates.
+
+**Dashboard endpoints** (`/observability/*`) are protected by `PERCHLY_OBSERVABILITY_API_KEY` (header `X-Api-Key` or `Authorization: Bearer <key>`).
+
+### 3.8 Learning Loop
+
+**File:** [`server/app/services/outcome_retrieval.py`](server/app/services/outcome_retrieval.py)
+
+Every finding's final outcome is stored in `outcome_examples`:
+
+| Path | Outcome |
+|---|---|
+| Auto-posted | `approved` |
+| Approved in queue | `approved` |
+| Edited in queue | `edited` |
+| Rejected in queue | `rejected` |
+| GitHub review dismissed (webhook) | `dismissed` |
+
+Before each specialist agent runs, a small number of similar past findings (retrieved by vector similarity of the finding's embedding) are prepended as few-shot calibration examples. The agent prompt instructs it not to copy findings — only to calibrate confidence based on what kinds of findings were accepted vs. rejected in the past.
+
+---
+
+## 4. Data Model
+
+```sql
+-- Every LLM/tool call recorded as a span
+agent_spans (
+  id              BIGSERIAL PRIMARY KEY,
+  review_run_id   TEXT NOT NULL,
+  repository      TEXT NOT NULL,
+  pr_number       INTEGER NOT NULL,
+  head_sha        TEXT NOT NULL,
+  agent           TEXT NOT NULL,
+  phase           TEXT NOT NULL DEFAULT '',
+  span_type       TEXT NOT NULL,          -- llm_call | tool_call | retrieval
+  model           TEXT,
+  tokens_in       INTEGER NOT NULL DEFAULT 0,
+  tokens_out      INTEGER NOT NULL DEFAULT 0,
+  cost_usd        NUMERIC(12,8) NOT NULL DEFAULT 0,
+  latency_ms      INTEGER NOT NULL,
+  input_summary   TEXT,
+  output_summary  TEXT,
+  status          TEXT NOT NULL DEFAULT 'success',
+  error_message   TEXT,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+)
+
+-- HITL queue
+review_queue (
+  id                       BIGSERIAL PRIMARY KEY,
+  delivery_id              TEXT NOT NULL,
+  repository               TEXT NOT NULL,
+  pr_number                INTEGER NOT NULL,
+  head_sha                 TEXT NOT NULL,
+  review_payload_json      JSONB NOT NULL,
+  specialist_failures_json JSONB NOT NULL DEFAULT '{}',
+  status                   TEXT NOT NULL DEFAULT 'pending'
+                           CHECK (status IN ('pending','approved','rejected','edited','expired')),
+  reason                   TEXT NOT NULL,
+  created_at               TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at               TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  resolved_at              TIMESTAMPTZ,
+  resolved_by              TEXT,
+  UNIQUE (repository, pr_number, head_sha)
+)
+
+-- Human decisions
+review_decisions (
+  id                 BIGSERIAL PRIMARY KEY,
+  queue_item_id      BIGINT NOT NULL REFERENCES review_queue(id) ON DELETE CASCADE,
+  decision           TEXT NOT NULL,      -- approve | reject | edit
+  edited_review_json JSONB,
+  reviewer           TEXT NOT NULL,
+  comment            TEXT,
+  decided_at         TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+)
+
+-- Learning: past findings as few-shot context
+outcome_examples (
+  id                   BIGSERIAL PRIMARY KEY,
+  repository           TEXT NOT NULL,
+  pr_number            INTEGER NOT NULL,
+  head_sha             TEXT NOT NULL,
+  finding_id           TEXT NOT NULL,
+  category             TEXT NOT NULL,
+  finding_json         JSONB NOT NULL,
+  final_outcome        TEXT NOT NULL,   -- approved | edited | rejected | dismissed
+  reviewer             TEXT,
+  source_queue_item_id BIGINT,
+  source_review_run_id TEXT,
+  created_at           TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE (repository, pr_number, head_sha, finding_id)
+)
+
+-- Code retrieval
+code_chunks (id, repository, path, revision, chunk_index, content, created_at)
+embeddings  (id, chunk_id REFERENCES code_chunks, embedding VECTOR(768), created_at)
+
+-- Dashboard aggregate (materialized view, refreshed every 5 min)
+daily_review_metrics (day, total_reviews, total_cost_usd, avg_cost_per_review_usd,
+                      p50_latency_ms, p95_latency_ms, total_accepted, acceptance_rate)
+```
+
+---
+
+## 5. API Reference
+
+### Webhook
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| `POST` | `/webhooks/github` | HMAC sig | Receive GitHub App events |
+
+### Review Queue
+
+| Method | Path | Body | Description |
+|---|---|---|---|
+| `GET` | `/reviews/queue` | — | List pending queue items |
+| `GET` | `/reviews/queue/{id}` | — | Get one queue item |
+| `POST` | `/reviews/queue/{id}/approve` | `{reviewer, comment?}` | Approve and post |
+| `POST` | `/reviews/queue/{id}/reject` | `{reviewer, comment?}` | Reject without posting |
+| `POST` | `/reviews/queue/{id}/edit` | `{reviewer, comment?, edited_review}` | Post edited version |
+
+### Observability *(requires `X-Api-Key` or `Authorization: Bearer <key>`)*
+
+| Method | Path | Query | Description |
+|---|---|---|---|
+| `GET` | `/observability/overview` | `days=14` | Volume, cost, latency, queue, acceptance |
+| `GET` | `/observability/traces` | `repository`, `agent`, `pr_number`, `head_sha`, `since`, `until`, `limit=50` | List review runs |
+| `GET` | `/observability/traces/{review_run_id}` | — | Single trace with all spans |
+
+### Health
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/` | Returns `{"message": "Everything ok"}` |
+
+---
+
+## 6. Configuration Reference
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `GITHUB_APP_ID` | ✅ | — | GitHub App numeric ID |
+| `GITHUB_WEBHOOK_SECRET` | ✅ | — | Shared webhook HMAC secret |
+| `GITHUB_PRIVATE_KEY_PATH` | ✅ | — | Path to the `.pem` private key file |
+| `GEMINI_API_KEY` | ✅ | — | Google Gemini API key |
+| `DATABASE_URL` | ✅ | — | PostgreSQL connection string (`postgresql://...?sslmode=require`) |
+| `TEMPORAL_ADDRESS` | ✅ | `localhost:7233` | Temporal server gRPC address |
+| `TEMPORAL_TASK_QUEUE` | ✅ | `perchly-reviews` | Temporal task queue name |
+| `PERCHLY_OBSERVABILITY_API_KEY` | ✅ | — | Secret key for `/observability/*` |
+| `GEMINI_MODEL` | — | `gemini-3.8-flash` | Gemini generation model |
+| `GEMINI_EMBEDDING_MODEL` | — | `gemini-embedding-2` | Gemini embedding model |
+| `EMBEDDING_DIMENSIONS` | — | `768` | Embedding vector dimensions |
+| `RETRIEVAL_TOP_K` | — | `5` | Chunks retrieved per specialist |
+| `PERCHLY_AUTO_POST_THRESHOLD` | — | `0.90` | Minimum confidence for direct posting |
+| `PERCHLY_SECURITY_AUTO_POST_THRESHOLD` | — | `0.95` | Stricter threshold for security |
+| `PERCHLY_MAX_AUTO_POST_FINDINGS` | — | `20` | Max findings before routing to HITL |
+| `PERCHLY_DATA_DIRECTORY` | — | `data/` | Local data directory |
+| `PERCHLY_OTEL_CONSOLE_EXPORT` | — | `false` | Print OTEL spans to stdout (dev only) |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | — | — | Optional OTLP/HTTP endpoint (Grafana Tempo, Jaeger) |
+| `NGROK_AUTHTOKEN` | — | — | ngrok auth token for tunnel |
+| `NGROK_DOMAIN` | — | ephemeral | Reserved ngrok domain |
+
+---
+
+## 7. Local Development
+
+### Requirements
+
+- Python 3.14 ([pyenv](https://github.com/pyenv/pyenv) recommended)
+- [uv](https://github.com/astral-sh/uv) — `pip install uv`
+- Node 20+ (for the web console)
+- Docker (for Temporal dev server, or full stack via Compose)
+
+### Backend
+
+```bash
+cd server
+
+# Install all dependencies
+uv sync
+
+# Start Temporal dev server (separate terminal)
+docker run --rm -p 7233:7233 -p 8233:8233 \
+  temporalio/temporal:latest server start-dev --ip 0.0.0.0 --ui-port 8233
+
+# Start the FastAPI server (separate terminal)
+uv run uvicorn app.main:app --reload --port 8000
+
+# Start the Temporal worker (separate terminal)
+uv run python -m app.temporal.worker
+```
+
+### Frontend
+
+```bash
+cd web
+npm install
+npm run dev   # starts on :5173, proxies /reviews and /observability to :8000
+```
+
+### Tests
+
+```bash
+cd server
+
+# Unit tests (no credentials needed)
+uv run pytest
+
+# Integration tests (require DATABASE_URL + GEMINI_API_KEY)
+uv run pytest -m integration
+
+# Golden-PR eval suite (consumes API quota)
+uv run python -m app.evals.run
+```
+
+### Exposing the webhook locally
+
+```bash
+ngrok http 8000
+# or with Docker Compose: set NGROK_AUTHTOKEN in .env, then:
+docker compose up ngrok
+```
+
+---
+
+## 8. Project Structure
+
+```
+Perchly/
+├── docker-compose.yml             Full stack: server, worker, temporal, web, ngrok
+├── .env.docker.example            Environment variable template
+├── README.md
+│
+├── server/                        Python FastAPI + Temporal backend
+│   ├── app/
+│   │   ├── agents/
+│   │   │   ├── base.py            SpecialistAgent dataclass + prompt builder
+│   │   │   ├── security.py
+│   │   │   ├── quality.py
+│   │   │   ├── test_coverage.py
+│   │   │   └── docs.py
+│   │   ├── core/
+│   │   │   ├── config.py          Environment variable loading
+│   │   │   └── logging.py         Structured logging setup
+│   │   ├── routers/
+│   │   │   ├── github_webhooks.py POST /webhooks/github
+│   │   │   ├── reviews.py         /reviews/* queue endpoints
+│   │   │   └── observability.py   /observability/* dashboard endpoints
+│   │   ├── schemas/
+│   │   │   ├── findings.py        Finding, ReviewResult, stable_finding_id
+│   │   │   ├── github.py          PullRequestWebhookPayload
+│   │   │   └── reviews.py         Request/response schemas
+│   │   ├── services/
+│   │   │   ├── aggregation.py     Merge + deduplicate findings
+│   │   │   ├── gemini.py          Gemini generation + embedding wrappers
+│   │   │   ├── github_api.py      GitHubAppClient (diff, files, comments)
+│   │   │   ├── idempotency.py     In-process delivery deduplication
+│   │   │   ├── outcome_retrieval.py  Few-shot context from past outcomes
+│   │   │   ├── retrieval.py       Chunking, embedding, pgvector upsert + query
+│   │   │   ├── review_queue.py    HITL queue + decision persistence
+│   │   │   ├── routing.py         Confidence-based routing decision
+│   │   │   ├── specialist_runner.py  Activity wrapper for agents
+│   │   │   └── telemetry.py       OTel spans, agent_spans table, aggregates
+│   │   ├── temporal/
+│   │   │   ├── activities.py      All Temporal activity definitions
+│   │   │   ├── client.py          Temporal client init + signal helpers
+│   │   │   ├── worker.py          Activity worker entrypoint
+│   │   │   └── workflows.py       ReviewWorkflow + signals + queries
+│   │   ├── evals/
+│   │   │   ├── run.py             Eval harness against golden PR diffs
+│   │   │   └── fixtures/          Golden PR diffs for model-quality CI gate
+│   │   └── main.py                FastAPI app factory + lifespan
+│   ├── pyproject.toml
+│   ├── Dockerfile
+│   └── .env.example
+│
+└── web/                           React 19 + TypeScript + Vite + Tailwind console
+    ├── src/
+    │   ├── components/
+    │   │   ├── queue/             QueuePage, ReviewQueue, ReviewDetail
+    │   │   ├── observability/     Overview, Traces, TraceDetail
+    │   │   └── ui/                Shared UI primitives
+    │   ├── hooks/                 useQueue, useOverview, useTraces, etc.
+    │   ├── lib/
+    │   │   ├── api.ts             Typed API client functions
+    │   │   ├── format.ts          shaShort, titleCase, duration helpers
+    │   │   └── icons.ts           Lucide icon re-exports
+    │   ├── styles/                CSS modules
+    │   ├── types.ts               TypeScript types mirroring API schemas
+    │   └── App.tsx                Root app with routing
+    ├── Dockerfile
+    └── nginx.conf                 Static serving + API proxy config
+```
+
+---
+
+## 9. Architecture Decisions
+
+### Why Temporal instead of Celery or plain asyncio?
+
+HITL reviews can sit in the queue for hours or days. Temporal's durable execution means the workflow state — including the "waiting for human signal" pause — survives worker restarts, deploys, and crashes with zero custom state-machine code. The `workflow.wait_condition` / signal pattern maps exactly onto the approve/reject/edit flow.
+
+### Why PostgreSQL + pgvector instead of a dedicated vector database?
+
+Perchly already needs PostgreSQL for the HITL queue and spans. Adding pgvector avoids a second infrastructure dependency, keeps retrieval + queue + observability data in one place for joins and transactions, and works on Neon's free tier.
+
+### Why the simple-query protocol for database writes?
+
+Neon's transaction-mode connection pooler routes pg8000's extended-protocol `Parse`/`Bind`/`Execute` messages to different backends, causing `SQLSTATE 26000` ("unnamed prepared statement does not exist"). Perchly inlines all parameter values as SQL literals using `_sql_literal()` and sends a single `Query` message. With `standard_conforming_strings = on` (PostgreSQL default since 9.1), only single-quote doubling is required — no backslash escaping.
+
+### Why Gemini instead of Claude or OpenAI?
+
+Gemini's structured tool-use API supports typed Pydantic output schemas natively, which is how Perchly gets strongly-typed `Finding` objects without free-text parsing. The embedding API (`gemini-embedding-2`) is co-located, so one API key covers both generation and retrieval.
+
+### Why not auto-merge fix PRs?
+
+Agent-authored fix PRs (Phase 5) always target a human review step before merge. Auto-merging AI-generated code changes without human approval is explicitly out of scope to preserve trust — the agent proposes, humans decide.
+
+---
+
+## 10. Roadmap
+
+| Phase | Status | Description |
+|---|---|---|
+| **Phase 0** | ✅ Done | Webhook receiver, single generalist agent, direct posting |
+| **Phase 1** | ✅ Done | Four specialist agents, pgvector context retrieval |
+| **Phase 2** | ✅ Done | Temporal orchestration, retries, partial-failure handling |
+| **Phase 3** | ✅ Done | HITL queue, approval UI, decision persistence |
+| **Phase 4** | ✅ Done | OTel spans, Timescale aggregates, observability dashboard |
+| **Phase 5** | 🔜 Next | **Agent-authored fix PRs** — per-finding "Raise Fix PR" button; Perchly creates a branch from `head_sha`, applies `suggested_fix` to the affected line range, and opens a GitHub PR targeting the original PR's head branch |
+| **Phase 6** | ⬜ Planned | **Learning loop improvements** — outcome-weighted retrieval, confidence calibration tuning |
+| **Phase 7** | 🔄 In progress | **OSS polish** — this README, setup scripts, example repo, contribution guide |
+
+---
+
+## 11. Contributing
+
+Contributions are welcome. Please follow these guidelines:
+
+1. **Open an issue first** for non-trivial changes to align on approach.
+2. **Fork → branch → PR** — branch naming: `feature/short-description` or `fix/short-description`.
+3. **Tests** — new code should have unit tests. Run `uv run pytest` before submitting.
+4. **No credentials in code** — all secrets via environment variables only.
+5. **Eval gate** — if you change a specialist agent prompt, run `uv run python -m app.evals.run` and include the output in your PR description.
+6. **Database writes** — any new PostgreSQL write must use the `_sql_literal` / `_run` helpers in `review_queue.py` or `telemetry.py`, not pg8000's parameterized `conn.run(query, **kwargs)` (see §9 for why).
+
+### Code style
+
+- **Python:** [Ruff](https://github.com/astral-sh/ruff) for linting and formatting.
+- **TypeScript:** ESLint + Prettier (configured in `web/`).
+
+---
+
+## 12. License
+
+MIT — see [LICENSE](LICENSE).
+
+---
+
+<p align="center">Built with obsessive care by <a href="https://github.com/0x-rekt">0x-rekt</a></p>
