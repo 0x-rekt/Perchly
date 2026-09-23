@@ -195,6 +195,9 @@ async def route_aggregated_review(review: dict[str, Any]) -> dict[str, Any]:
                 "title": fetched["title"],
                 "description": fetched["description"],
                 "diff": fetched["diff"],
+                # An installation id is not a secret and lets a later
+                # reviewer-approved fix PR mint a fresh short-lived token.
+                "installation_id": fetched["installation_id"],
                 "repository_files": fetched["repository_files"],
                 "contexts": fetched.get("contexts", {}),
             },

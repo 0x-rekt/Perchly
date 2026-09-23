@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
-import { submitDecision } from "../../lib/api";
+import { createFixPr, previewFixPr, submitDecision } from "../../lib/api";
 import {
   AlertCircle,
   Check,
@@ -30,6 +30,9 @@ export function ReviewDetail({
   const [edited, setEdited] = useState(() => JSON.stringify(review, null, 2));
   const [busy, setBusy] = useState<Decision | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [fixing, setFixing] = useState<string | null>(null);
+  const [fixLinks, setFixLinks] = useState<Record<string, string>>({});
+  const [preview, setPreview] = useState<{ fixId: number; findingId: string; diff: string; files: string[] } | null>(null);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -98,6 +101,28 @@ export function ReviewDetail({
         {review.findings.map((finding, index) => (
           <FindingCard
             finding={finding}
+            fixing={fixing === finding.finding_id}
+            pullRequestUrl={finding.finding_id ? fixLinks[finding.finding_id] : undefined}
+            onFix={async () => {
+              if (!reviewer.trim()) {
+                setError("Enter your name or email before raising a fix PR.");
+                return;
+              }
+              if (!finding.finding_id) {
+                setError("This finding has no stable ID and cannot be fixed safely.");
+                return;
+              }
+              setError(null);
+              setFixing(finding.finding_id);
+              try {
+                const result = await previewFixPr(item.id, finding.finding_id, reviewer.trim());
+                setPreview({ fixId: result.fix_id, findingId: finding.finding_id, diff: result.diff, files: result.files });
+              } catch (err) {
+                setError(err instanceof Error ? err.message : "Unable to raise a fix PR.");
+              } finally {
+                setFixing(null);
+              }
+            }}
             key={`${finding.file}-${finding.line_start}-${index}`}
           />
         ))}
@@ -112,6 +137,34 @@ export function ReviewDetail({
           </div>
         )}
       </div>
+      {preview && (
+        <div className="fix-preview" role="dialog" aria-label="Proposed fix preview">
+          <div className="fix-preview-header">
+            <b>Proposed fix</b>
+            <span>{preview.files.join(", ")}</span>
+          </div>
+          <pre>{preview.diff}</pre>
+          <div className="decision-actions">
+            <Action
+              label="Confirm and open Fix PR"
+              icon={<Check size={16} />}
+              busy={fixing === preview.findingId}
+              onClick={() => {
+                setFixing(preview.findingId);
+                void createFixPr(preview.fixId, reviewer.trim())
+                  .then((result) => {
+                    setFixLinks((current) => ({ ...current, [preview.findingId]: result.pull_request_url }));
+                    setPreview(null);
+                  })
+                  .catch((err: unknown) => setError(err instanceof Error ? err.message : "Unable to create fix PR."))
+                  .finally(() => setFixing(null));
+              }}
+              variant="primary"
+            />
+            <button type="button" className="reset-button" onClick={() => setPreview(null)}>Cancel</button>
+          </div>
+        </div>
+      )}
       <div className="decision-panel">
         {error && (
           <div className="decision-error" role="alert">
@@ -225,7 +278,17 @@ function Field({
   );
 }
 
-function FindingCard({ finding }: { finding: Finding }) {
+function FindingCard({
+  finding,
+  fixing,
+  pullRequestUrl,
+  onFix,
+}: {
+  finding: Finding;
+  fixing: boolean;
+  pullRequestUrl?: string;
+  onFix: () => void;
+}) {
   return (
     <article className="finding-card">
       <div className="finding-meta">
@@ -246,6 +309,20 @@ function FindingCard({ finding }: { finding: Finding }) {
         <p className="suggested-fix">
           <b>Suggested fix:</b> {finding.suggested_fix}
         </p>
+      )}
+      {finding.suggested_fix && finding.finding_id && (
+        <div className="finding-fix-action">
+          {pullRequestUrl ? (
+            <a href={pullRequestUrl} target="_blank" rel="noreferrer">
+              View generated fix PR
+            </a>
+          ) : (
+            <button type="button" onClick={onFix} disabled={fixing} className="action action-secondary">
+              {fixing ? <LoaderCircle size={14} className="spin" /> : <FileCode2 size={14} />}
+              {fixing ? "Opening fix PR…" : "Raise Fix PR"}
+            </button>
+          )}
+        </div>
       )}
     </article>
   );

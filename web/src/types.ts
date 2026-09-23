@@ -4,6 +4,7 @@ export type RouteKey = "queue" | "overview" | "runs";
 
 export type Severity = "info" | "warning" | "critical";
 export type Finding = {
+  finding_id?: string | null;
   category: string;
   file: string;
   line_start: number;

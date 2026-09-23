@@ -17,3 +17,7 @@ class EditedReviewPayload(BaseModel):
 
 class EditReviewRequest(ReviewDecisionRequest):
     edited_review: EditedReviewPayload
+
+
+class FixPullRequestRequest(BaseModel):
+    reviewer: str = Field(min_length=1)

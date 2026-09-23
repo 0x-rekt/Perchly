@@ -10,6 +10,7 @@ from app.temporal.client import start_review_workflow
 from app.temporal.workflows import ReviewWorkflowInput
 from app.services.idempotency import IdempotencyStore
 from app.services.github_webhooks import valid_github_signature
+from app.services.github_api import GENERATED_FIX_PR_MARKER
 from app.services.review_queue import ReviewQueueService
 
 logger = logging.getLogger(__name__)
@@ -106,6 +107,21 @@ async def receive_github_events(
 
     if not is_supported_pull_request_action(payload.action):
         return {"status": "ignored", "reason": "unsupported pull request action"}
+
+    # Fix PRs remain ordinary GitHub PRs for human review, but their own
+    # opened/synchronize events must not recursively start another Perchly run.
+    try:
+        raw_event = json.loads(raw_body)
+    except json.JSONDecodeError:
+        raw_event = {}
+    pull_request_body = (raw_event.get("pull_request") or {}).get("body")
+    if isinstance(pull_request_body, str) and GENERATED_FIX_PR_MARKER in pull_request_body:
+        logger.info(
+            "Ignoring Perchly-generated fix PR repository=%s pr_number=%s",
+            payload.repository.full_name,
+            payload.pull_request.number,
+        )
+        return {"status": "ignored", "reason": "perchly-generated fix PR"}
 
     if not idempotency_store.claim(
         delivery_id=x_github_delivery,

@@ -77,3 +77,24 @@ export function submitDecision(
     body,
   });
 }
+
+export function previewFixPr(
+  itemId: number,
+  findingId: string,
+  reviewer: string,
+): Promise<{ fix_id: number; diff: string; files: string[] }> {
+  return request(`/reviews/queue/${itemId}/findings/${encodeURIComponent(findingId)}/fix-pr/preview`, {
+    method: "POST",
+    body: { reviewer },
+  });
+}
+
+export function createFixPr(
+  fixId: number,
+  reviewer: string,
+): Promise<{ fix_id: number; pull_request_url: string; branch: string }> {
+  return request(`/reviews/fix-pr/${fixId}/create`, {
+    method: "POST",
+    body: { reviewer },
+  });
+}

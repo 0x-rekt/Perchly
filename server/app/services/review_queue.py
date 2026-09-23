@@ -115,6 +115,70 @@ class ReviewQueueService:
     async def get_item(self, queue_item_id: int) -> dict[str, Any] | None:
         return await asyncio.to_thread(self._get_item, queue_item_id)
 
+    async def save_fix_preview(
+        self, *, queue_item_id: int, finding_id: str, patch: dict[str, Any], reviewer: str
+    ) -> int:
+        return await asyncio.to_thread(self._save_fix_preview, queue_item_id, finding_id, patch, reviewer)
+
+    async def get_fix_preview(self, fix_id: int) -> dict[str, Any] | None:
+        return await asyncio.to_thread(self._get_fix_preview, fix_id)
+
+    async def mark_fix_created(self, *, fix_id: int, reviewer: str, branch: str, url: str) -> None:
+        await asyncio.to_thread(self._mark_fix_created, fix_id, reviewer, branch, url)
+
+    async def mark_fix_failed(self, *, fix_id: int) -> None:
+        await asyncio.to_thread(self._mark_fix_failed, fix_id)
+
+    def _save_fix_preview(self, queue_item_id: int, finding_id: str, patch: dict[str, Any], reviewer: str) -> int:
+        def operation(connection) -> int:
+            _initialize_schema(connection)
+            row = _run(connection, """
+                INSERT INTO fix_prs (queue_item_id, finding_id, patch_json, reviewer, status)
+                VALUES (%s, %s, %s, %s, 'previewed')
+                ON CONFLICT (queue_item_id, finding_id) DO UPDATE SET
+                    patch_json = EXCLUDED.patch_json, reviewer = EXCLUDED.reviewer,
+                    updated_at = CURRENT_TIMESTAMP
+                RETURNING id
+            """, (queue_item_id, finding_id, json.dumps(patch, separators=(",", ":")), reviewer))[0]
+            _run(connection, "COMMIT")
+            return int(row[0])
+        return _execute(operation)
+
+    def _get_fix_preview(self, fix_id: int) -> dict[str, Any] | None:
+        def operation(connection) -> dict[str, Any] | None:
+            _initialize_schema(connection)
+            rows = _run(connection, """
+                SELECT id, queue_item_id, finding_id, patch_json, reviewer, status,
+                       branch, pull_request_url, created_at, updated_at
+                FROM fix_prs WHERE id = %s
+            """, (fix_id,))
+            if not rows:
+                return None
+            fields = ("id", "queue_item_id", "finding_id", "patch", "reviewer", "status",
+                      "branch", "pull_request_url", "created_at", "updated_at")
+            values = list(rows[0])
+            if isinstance(values[3], str):
+                values[3] = json.loads(values[3])
+            return dict(zip(fields, values, strict=True))
+        return _execute(operation)
+
+    def _mark_fix_created(self, fix_id: int, reviewer: str, branch: str, url: str) -> None:
+        def operation(connection) -> None:
+            _initialize_schema(connection)
+            _run(connection, """
+                UPDATE fix_prs SET reviewer = %s, status = 'created', branch = %s,
+                    pull_request_url = %s, updated_at = CURRENT_TIMESTAMP WHERE id = %s
+            """, (reviewer, branch, url, fix_id))
+            _run(connection, "COMMIT")
+        _execute(operation)
+
+    def _mark_fix_failed(self, fix_id: int) -> None:
+        def operation(connection) -> None:
+            _initialize_schema(connection)
+            _run(connection, "UPDATE fix_prs SET status = 'failed', updated_at = CURRENT_TIMESTAMP WHERE id = %s", (fix_id,))
+            _run(connection, "COMMIT")
+        _execute(operation)
+
     def _list_items(self, status: str) -> list[dict[str, Any]]:
         def operation(connection) -> list[dict[str, Any]]:
             _initialize_schema(connection)
@@ -550,6 +614,21 @@ def _initialize_schema(connection) -> None:
         )
         """,
     )
+    _run(connection, """
+        CREATE TABLE IF NOT EXISTS fix_prs (
+            id BIGSERIAL PRIMARY KEY,
+            queue_item_id BIGINT NOT NULL REFERENCES review_queue(id) ON DELETE CASCADE,
+            finding_id TEXT NOT NULL,
+            patch_json JSONB NOT NULL,
+            reviewer TEXT NOT NULL,
+            status TEXT NOT NULL CHECK (status IN ('previewed', 'created', 'failed')),
+            branch TEXT,
+            pull_request_url TEXT,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE (queue_item_id, finding_id)
+        )
+    """)
     _run(
         connection,
         f"""

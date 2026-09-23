@@ -1815,3 +1815,27 @@ textarea {
     transition-duration: 0.01ms !important;
   }
 }
+ .fix-preview {
+  margin: 1rem 0;
+  padding: 1rem;
+  border: 1px solid var(--border, #d8dee9);
+  border-radius: 12px;
+  background: var(--surface-muted, #f7f8fa);
+}
+
+.fix-preview-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: .75rem;
+}
+
+.fix-preview pre {
+  max-height: 360px;
+  overflow: auto;
+  padding: .85rem;
+  border-radius: 8px;
+  background: #10151c;
+  color: #d7e2ef;
+  white-space: pre-wrap;
+}

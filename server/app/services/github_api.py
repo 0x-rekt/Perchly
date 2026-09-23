@@ -1,4 +1,5 @@
 import time
+import base64
 from dataclasses import dataclass
 import posixpath
 from pathlib import Path
@@ -16,11 +17,26 @@ from app.services.telemetry import otel_span
 class GitHubApiError(RuntimeError):
     """Raised when GitHub rejects an API request needed for a review."""
 
+    def __init__(self, message: str, *, status_code: int | None = None, response_text: str = "") -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.response_text = response_text
+
+
+GENERATED_FIX_PR_MARKER = "<!-- perchly-generated-fix-pr -->"
+
 
 @dataclass(frozen=True)
 class RepositoryFile:
     path: str
     content: str
+
+
+@dataclass(frozen=True)
+class RepositoryFileVersion:
+    path: str
+    content: str
+    sha: str
 
 
 _RELATIVE_IMPORT = re.compile(
@@ -78,7 +94,9 @@ class GitHubAppClient:
 
             if response.is_error:
                 raise GitHubApiError(
-                    f"GitHub API {method} {path} failed with status {response.status_code}"
+                    f"GitHub API {method} {path} failed with status {response.status_code}",
+                    status_code=response.status_code,
+                    response_text=response.text[:1000],
                 )
             return response
 
@@ -202,6 +220,128 @@ class GitHubAppClient:
             headers={"Accept": "application/vnd.github.raw+json"},
         )
         return response.text or None
+
+    async def repository_file_version(
+        self, *, repository: str, path: str, revision: str, installation_token: str
+    ) -> RepositoryFileVersion:
+        response = await self._request(
+            "GET",
+            f"/repos/{repository}/contents/{quote(path, safe='/')}?ref={quote(revision)}",
+            token=installation_token,
+        )
+        payload = response.json()
+        if not isinstance(payload, dict) or payload.get("type") != "file":
+            raise GitHubApiError(f"GitHub path is not a file: {path}")
+        encoded = payload.get("content")
+        sha = payload.get("sha")
+        if not isinstance(encoded, str) or not isinstance(sha, str):
+            raise GitHubApiError(f"GitHub file response is missing content or sha: {path}")
+        try:
+            content = base64.b64decode(encoded.replace("\n", "")).decode("utf-8")
+        except (ValueError, UnicodeDecodeError) as error:
+            raise GitHubApiError(f"GitHub file is not UTF-8 text: {path}") from error
+        return RepositoryFileVersion(path=path, content=content, sha=sha)
+
+    async def pull_request_base_branch(
+        self, *, repository: str, pr_number: int, installation_token: str
+    ) -> str:
+        response = await self._request(
+            "GET", f"/repos/{repository}/pulls/{pr_number}", token=installation_token
+        )
+        payload = response.json()
+        base = payload.get("base") if isinstance(payload, dict) else None
+        branch = base.get("ref") if isinstance(base, dict) else None
+        if not isinstance(branch, str) or not branch:
+            raise GitHubApiError("GitHub pull-request response did not contain a base branch")
+        return branch
+
+    async def create_branch(
+        self, *, repository: str, branch: str, from_sha: str, installation_token: str
+    ) -> None:
+        await self._request(
+            "POST",
+            f"/repos/{repository}/git/refs",
+            token=installation_token,
+            json={"ref": f"refs/heads/{branch}", "sha": from_sha},
+        )
+
+    async def ensure_branch(
+        self, *, repository: str, branch: str, from_sha: str, installation_token: str
+    ) -> None:
+        try:
+            await self._request(
+                "GET", f"/repos/{repository}/git/ref/heads/{quote(branch, safe='/')}",
+                token=installation_token,
+            )
+        except GitHubApiError as error:
+            if "status 404" not in str(error):
+                raise
+            await self.create_branch(
+                repository=repository, branch=branch, from_sha=from_sha,
+                installation_token=installation_token,
+            )
+
+    async def find_open_pull_request(
+        self, *, repository: str, head: str, installation_token: str
+    ) -> str | None:
+        owner = repository.split("/", 1)[0]
+        response = await self._request(
+            "GET",
+            f"/repos/{repository}/pulls?state=open&head={quote(owner + ':' + head, safe=':')}",
+            token=installation_token,
+        )
+        payload = response.json()
+        if not isinstance(payload, list):
+            raise GitHubApiError("GitHub pull-request response was not a list")
+        for item in payload:
+            if isinstance(item, dict) and isinstance(item.get("html_url"), str):
+                return item["html_url"]
+        return None
+
+    async def update_repository_file(
+        self,
+        *,
+        repository: str,
+        path: str,
+        branch: str,
+        content: str,
+        file_sha: str,
+        message: str,
+        installation_token: str,
+    ) -> None:
+        await self._request(
+            "PUT",
+            f"/repos/{repository}/contents/{quote(path, safe='/')}",
+            token=installation_token,
+            json={
+                "message": message,
+                "content": base64.b64encode(content.encode("utf-8")).decode("ascii"),
+                "branch": branch,
+                "sha": file_sha,
+            },
+        )
+
+    async def create_pull_request(
+        self,
+        *,
+        repository: str,
+        head: str,
+        base: str,
+        title: str,
+        body: str,
+        installation_token: str,
+    ) -> str:
+        response = await self._request(
+            "POST",
+            f"/repos/{repository}/pulls",
+            token=installation_token,
+            json={"title": title, "body": body, "head": head, "base": base},
+        )
+        payload = response.json()
+        url = payload.get("html_url") if isinstance(payload, dict) else None
+        if not isinstance(url, str):
+            raise GitHubApiError("GitHub pull-request response did not contain html_url")
+        return url
 
     async def create_pull_request_comment(
         self, *, repository: str, pr_number: int, body: str, installation_token: str

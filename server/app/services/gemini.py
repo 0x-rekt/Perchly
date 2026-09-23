@@ -27,6 +27,12 @@ security, code quality, test coverage, or documentation. Do not invent files, li
 numbers, dependencies, or behavior not supported by the diff. Prefer zero findings
 to speculative or stylistic nitpicks. Each finding must point to a changed line.
 
+When a concrete fix is possible, put it in `suggested_fix`. For a single-file
+line replacement, provide only replacement code. For a fix spanning multiple
+files, provide a standard unified diff in a fenced `diff` block using `--- a/...`
+and `+++ b/...` headers. Never claim a patch is safe when the supplied context is
+insufficient; use a concise explanation instead.
+
 For each newly introduced or changed executable branch, check whether the diff adds
 corresponding tests. If it does not, emit one `test_coverage` warning that names the
 missing behavior or edge cases. Prioritize that test-coverage finding over a generic
