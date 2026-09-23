@@ -84,7 +84,7 @@ export function QueuePage({
         description="Resolve low-confidence findings before they reach GitHub."
         aside={aside}
       />
-      <div className="metrics-row">
+      <div className="mb-[30px] grid grid-cols-4 gap-2.5 max-[1020px]:grid-cols-2">
         <Metric
           icon={<Inbox size={16} />}
           label="Awaiting review"
@@ -126,12 +126,12 @@ export function QueuePage({
         hint={reloading ? "refreshing…" : undefined}
       />
       {loading && !data ? (
-        <div className="queue-layout">
+        <div className="grid grid-cols-[320px_minmax(0,1fr)] gap-3.5 items-start max-[900px]:grid-cols-1">
           <SkeletonPanel rows={5} />
           <SkeletonPanel rows={8} />
         </div>
       ) : (
-        <div className="queue-layout">
+        <div className="grid grid-cols-[320px_minmax(0,1fr)] gap-3.5 items-start max-[900px]:grid-cols-1">
           <ReviewQueue
             items={items}
             selectedId={active?.id ?? null}

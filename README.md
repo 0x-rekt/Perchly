@@ -8,6 +8,11 @@
 
 Every agent action, LLM call, and human decision is recorded as a span in a queryable PostgreSQL table. A live dashboard surfaces cost per review, latency by phase, HITL queue depth, and per-category acceptance rates.
 
+For actionable findings, reviewers can use **Raise Fix PR**. Perchly generates a
+reviewable unified diff, shows a preview in the console, and—after confirmation—
+creates or reuses a branch and opens a GitHub PR. Generated fix PRs remain normal
+human-reviewable PRs; Perchly ignores their webhook events to prevent recursive reviews.
+
 ---
 
 ## Table of Contents
@@ -292,6 +297,18 @@ When routing returns `needs_approval`:
 5. The API server sends the corresponding Temporal signal (`approve_review`, `reject_review`, `edit_review`).
 6. The workflow resumes, posts to GitHub (if approved or edited), records the decision, and completes.
 
+### Agent-authored fix PRs
+
+Each finding with a suggested fix exposes a **Raise Fix PR** action:
+
+1. `POST /reviews/queue/{id}/findings/{finding_id}/fix-pr/preview` builds and persists a structured patch without changing GitHub.
+2. The UI displays the unified diff and affected files for reviewer confirmation.
+3. `POST /reviews/fix-pr/{fix_id}/create` validates the preview against the original `head_sha`, creates or reuses a `perchly/fix/...` branch, commits one or more files, and opens a PR against the original PR's base branch.
+4. Repeated confirmation is idempotent and returns the existing open PR.
+5. The `<!-- perchly-generated-fix-pr -->` marker prevents the generated PR from starting another Perchly review. A human still reviews and merges it normally.
+
+The `fix_prs` table stores the preview, reviewer, status, branch, pull-request URL, and timestamps. Plain replacement suggestions become one-file unified diffs; fenced unified diffs can update multiple files.
+
 **Database protocol:** All writes use PostgreSQL's **simple-query protocol** — values are inlined as SQL literals via `_sql_literal()`. This is required because Neon's transaction-mode pooler routes pg8000's extended-protocol `Parse`/`Bind` messages to different backends, causing `SQLSTATE 26000`. Single-quote doubling is the only escaping needed (`standard_conforming_strings = on`).
 
 ### 3.7 Observability
@@ -381,6 +398,21 @@ review_decisions (
   decided_at         TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 )
 
+-- Previewed and generated agent-authored fix PRs
+fix_prs (
+  id               BIGSERIAL PRIMARY KEY,
+  queue_item_id    BIGINT NOT NULL REFERENCES review_queue(id) ON DELETE CASCADE,
+  finding_id       TEXT NOT NULL,
+  patch_json       JSONB NOT NULL,
+  reviewer         TEXT NOT NULL,
+  status           TEXT NOT NULL,        -- previewed | created | failed
+  branch           TEXT,
+  pull_request_url TEXT,
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at       TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE (queue_item_id, finding_id)
+)
+
 -- Learning: past findings as few-shot context
 outcome_examples (
   id                   BIGSERIAL PRIMARY KEY,
@@ -426,6 +458,8 @@ daily_review_metrics (day, total_reviews, total_cost_usd, avg_cost_per_review_us
 | `POST` | `/reviews/queue/{id}/approve` | `{reviewer, comment?}`                | Approve and post         |
 | `POST` | `/reviews/queue/{id}/reject`  | `{reviewer, comment?}`                | Reject without posting   |
 | `POST` | `/reviews/queue/{id}/edit`    | `{reviewer, comment?, edited_review}` | Post edited version      |
+| `POST` | `/reviews/queue/{id}/findings/{finding_id}/fix-pr/preview` | `{reviewer}` | Generate and persist a fix diff |
+| `POST` | `/reviews/fix-pr/{fix_id}/create` | `{reviewer}` | Confirm preview and open/reuse a GitHub PR |
 
 ### Observability _(requires `X-Api-Key` or `Authorization: Bearer <key>`)_
 
@@ -561,7 +595,8 @@ Perchly/
 │   │   ├── services/
 │   │   │   ├── aggregation.py     Merge + deduplicate findings
 │   │   │   ├── gemini.py          Gemini generation + embedding wrappers
-│   │   │   ├── github_api.py      GitHubAppClient (diff, files, comments)
+│   │   │   ├── github_api.py      GitHubAppClient (diff, files, branches, PRs)
+│   │   │   ├── fix_pr.py          Structured patch and fix-PR workflow
 │   │   │   ├── idempotency.py     In-process delivery deduplication
 │   │   │   ├── outcome_retrieval.py  Few-shot context from past outcomes
 │   │   │   ├── retrieval.py       Chunking, embedding, pgvector upsert + query
@@ -635,7 +670,7 @@ Agent-authored fix PRs (Phase 5) always target a human review step before merge.
 | **Phase 2** | ✅ Done        | Temporal orchestration, retries, partial-failure handling                                                                                                                                                                   |
 | **Phase 3** | ✅ Done        | HITL queue, approval UI, decision persistence                                                                                                                                                                               |
 | **Phase 4** | ✅ Done        | OTel spans, Timescale aggregates, observability dashboard                                                                                                                                                                   |
-| **Phase 5** | 🔜 Next        | **Agent-authored fix PRs** — per-finding "Raise Fix PR" button; Perchly creates a branch from `head_sha`, applies `suggested_fix` to the affected line range, and opens a GitHub PR targeting the original PR's head branch |
+| **Phase 5** | ✅ Done        | **Agent-authored fix PRs** — structured patch preview, confirmation, idempotent branch/PR creation, persistence, and generated-PR webhook loop prevention |
 | **Phase 6** | ⬜ Planned     | **Learning loop improvements** — outcome-weighted retrieval, confidence calibration tuning                                                                                                                                  |
 | **Phase 7** | 🔄 In progress | **Docs & setup polish** — this README, setup scripts, cleaner install for new machines                                                                                                                                      |
 

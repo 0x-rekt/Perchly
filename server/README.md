@@ -66,6 +66,27 @@ Approval-required Temporal workflows wait durably for one of the `approve_review
 `reject_review`, or `edit_review` signals. Approved and edited reviews are posted
 after the signal; rejected reviews are recorded without posting.
 
+### Agent-authored fix PRs
+
+The approval console supports a two-step fix workflow:
+
+```text
+POST /reviews/queue/{queue_id}/findings/{finding_id}/fix-pr/preview
+POST /reviews/fix-pr/{fix_id}/create
+```
+
+The first call generates and stores a unified diff without changing GitHub. The
+console displays the affected files and diff; the second call requires explicit
+reviewer confirmation. Perchly then creates or reuses a `perchly/fix/...` branch,
+updates one or more files, and opens a pull request against the original PR's base
+branch. The `fix_prs` table stores the patch, reviewer, status, branch, URL, and
+timestamps.
+
+The GitHub App must have `Contents: Read and write`, `Pull requests: Read and write`,
+and `Metadata: Read-only`. Generated PR bodies contain a hidden Perchly marker. The
+webhook receiver ignores marked generated PR events, so humans can review and merge
+the PR without Perchly recursively reviewing its own change.
+
 Run the Phase 0 automated checks:
 
 ```powershell

@@ -40,5 +40,7 @@ export function useSurface<T>(load: () => Promise<T>): SurfaceState<T> {
     void run(false);
   }, [run]);
 
-  return { data, error, loading, reloading, reload: () => void run(true) };
+  const reload = useCallback(() => void run(true), [run]);
+
+  return { data, error, loading, reloading, reload };
 }

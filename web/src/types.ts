@@ -27,6 +27,7 @@ export type ReviewItem = {
     review?: Review;
     title?: string;
     description?: string | null;
+    diff?: string;
   };
   specialist_failures: Record<string, string>;
 };
@@ -36,7 +37,7 @@ export type MetricCardProps = {
   label: string;
   value: ReactNode;
   detail: string;
-  accent: string;
+  accent: "lime" | "cyan" | "orange" | "violet";
 };
 
 export type ReviewsPerDay = { day: string; reviews: number };

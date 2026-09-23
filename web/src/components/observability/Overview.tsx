@@ -2,7 +2,6 @@ import { useEffect } from "react";
 import {
   EmptyState,
   Metric,
-  NoTelemetry,
   PageHeading,
   PanelHeading,
   SkeletonPanel,
@@ -19,6 +18,14 @@ import {
 } from "../../lib/format";
 import { useSurface } from "../../hooks/use-surface";
 import type { OverviewMetrics, ReviewsPerDay } from "../../types";
+
+const TH =
+  "border-y border-line bg-canvas/40 px-[18px] py-2.5 text-left font-mono text-[10px] font-medium uppercase tracking-[0.08em] text-faint whitespace-nowrap";
+const TH_NUM =
+  "border-y border-line bg-canvas/40 px-[18px] py-2.5 text-right font-mono text-[10px] font-medium uppercase tracking-[0.08em] text-faint whitespace-nowrap tabular-nums";
+const TD = "border-b border-line px-[18px] py-3 text-[12.5px] text-ink whitespace-nowrap";
+const TD_NUM =
+  "border-b border-line px-[18px] py-3 text-right font-mono text-[12px] text-ink whitespace-nowrap tabular-nums";
 
 export function Overview({
   onLiveChange,
@@ -54,15 +61,18 @@ export function Overview({
 
   if (loading && !data) {
     return (
-      <div className="overview">
+      <div className="grid">
         <PageHeading
           title="Review at a glance"
           description="Volume, cost, latency, and acceptance across the last 14 days."
           aside={aside}
         />
-        <div className="metrics-row">
+        <div className="mb-[30px] grid grid-cols-4 gap-2.5 max-[1020px]:grid-cols-2">
           {Array.from({ length: 4 }, (_, index) => (
-            <div className="metric-card skeleton" key={index} />
+            <div
+              className="min-h-[122px] animate-pulse rounded-lg border border-line bg-panel-2 motion-reduce:animate-none"
+              key={index}
+            />
           ))}
         </div>
         <SkeletonPanel rows={6} />
@@ -72,7 +82,7 @@ export function Overview({
 
   if (error && !data) {
     return (
-      <div className="overview">
+      <div className="grid">
         <PageHeading
           title="Review at a glance"
           description="Volume, cost, latency, and acceptance across the last 14 days."
@@ -90,13 +100,13 @@ export function Overview({
   const overallRate = findingsTotal ? acceptedTotal / findingsTotal : 0;
 
   return (
-    <div className="overview">
+    <div className="grid">
       <PageHeading
         title="Review at a glance"
         description="Volume, cost, latency, and acceptance across the last 14 days."
         aside={aside}
       />
-      <div className="metrics-row">
+      <div className="mb-[30px] grid grid-cols-4 gap-2.5 max-[1020px]:grid-cols-2">
         <Metric
           icon={<GitPullRequest size={16} />}
           label="Reviews in window"
@@ -138,17 +148,22 @@ export function Overview({
           body="The overview fills in after the first PR is reviewed. Open a pull request with the Perchly app installed and this dashboard will report volume, cost, latency, and acceptance."
         />
       ) : (
-        <div className="overview-grid">
-          <section className="panel volume-panel" aria-label="Review volume">
+        <div className="grid grid-cols-2 items-start gap-3.5 max-[900px]:grid-cols-1">
+          <section
+            className="col-span-2 overflow-hidden rounded-lg border border-line bg-panel max-[900px]:col-span-1"
+            aria-label="Review volume"
+          >
             <PanelHeading
               title="Review volume"
               meta="Distinct reviews started per day"
-              actions={<NoTelemetry tone="ok" />}
             />
             <VolumeChart points={overview.reviews_per_day} />
           </section>
 
-          <section className="panel table-panel" aria-label="Latency by phase">
+          <section
+            className="overflow-hidden rounded-lg border border-line bg-panel"
+            aria-label="Latency by phase"
+          >
             <PanelHeading
               title="Latency by phase"
               meta="p50 / p95 across spans, last 7 days"
@@ -156,7 +171,10 @@ export function Overview({
             <LatencyTable rows={overview.latency_by_phase} />
           </section>
 
-          <section className="panel table-panel" aria-label="Acceptance by category">
+          <section
+            className="overflow-hidden rounded-lg border border-line bg-panel"
+            aria-label="Acceptance by category"
+          >
             <PanelHeading
               title="Acceptance by category"
               meta="How often each domain passes the bar"
@@ -164,7 +182,10 @@ export function Overview({
             <AcceptanceTable rows={overview.acceptance_rate_by_category} />
           </section>
 
-          <section className="panel table-panel" aria-label="Learning outcomes">
+          <section
+            className="overflow-hidden rounded-lg border border-line bg-panel"
+            aria-label="Learning outcomes"
+          >
             <PanelHeading
               title="Learning outcomes"
               meta="Finding outcomes used for future calibration"
@@ -179,9 +200,12 @@ export function Overview({
 
 function PanelError({ message }: { message: string }) {
   return (
-    <div className="panel panel-error" role="alert">
-      <p>Unable to load the overview.</p>
-      <span>{message}</span>
+    <div
+      className="grid justify-items-center gap-[5px] rounded-lg border border-line bg-panel p-[26px] text-center"
+      role="alert"
+    >
+      <p className="m-0 text-[14px] font-bold text-red">Unable to load the overview.</p>
+      <span className="text-[12.5px] text-muted">{message}</span>
     </div>
   );
 }
@@ -194,12 +218,13 @@ function VolumeChart({ points }: { points: ReviewsPerDay[] }) {
   const max = Math.max(1, ...points.map((point) => point.reviews));
   const n = Math.max(points.length, 1);
   const slot = width / n;
-  const barWidth = Math.max(8, slot * 0.6);
+  const barWidth = Math.min(Math.max(8, slot * 0.6), 56);
   const labelEvery = Math.max(1, Math.ceil(n / 7));
 
   return (
-    <div className="volume-chart">
+    <div className="px-[18px] pt-1 pb-2.5">
       <svg
+        className="block h-auto w-full"
         viewBox={`0 0 ${width} ${height}`}
         role="img"
         aria-label="Reviews started per day"
@@ -213,7 +238,7 @@ function VolumeChart({ points }: { points: ReviewsPerDay[] }) {
           return (
             <g key={point.day}>
               <rect
-                className="chart-bar"
+                className="fill-lime/50 transition-[fill] duration-[160ms] hover:fill-lime"
                 x={x}
                 y={y}
                 width={barWidth}
@@ -227,7 +252,7 @@ function VolumeChart({ points }: { points: ReviewsPerDay[] }) {
               </rect>
               {point.reviews > 0 && max > 1 && (
                 <text
-                  className="chart-value"
+                  className="fill-muted font-mono text-[10px] tabular-nums"
                   x={x + barWidth / 2}
                   y={y - 5}
                   textAnchor="middle"
@@ -237,7 +262,7 @@ function VolumeChart({ points }: { points: ReviewsPerDay[] }) {
               )}
               {label && (
                 <text
-                  className="chart-label"
+                  className="fill-faint font-mono text-[9.5px]"
                   x={x + barWidth / 2}
                   y={height - 16}
                   textAnchor="middle"
@@ -255,32 +280,32 @@ function VolumeChart({ points }: { points: ReviewsPerDay[] }) {
 
 function LatencyTable({ rows }: { rows: OverviewMetrics["latency_by_phase"] }) {
   if (rows.length === 0) {
-    return <p className="table-null">No phase spans recorded in this window.</p>;
+    return <p className="m-0 p-6 text-center text-[12.5px] leading-[1.6] text-faint">No phase spans recorded in this window.</p>;
   }
   return (
-    <div className="data-table-wrap">
-      <table className="data-table">
+    <div className="overflow-x-auto">
+      <table className="w-full border-collapse text-[12.5px]">
         <thead>
           <tr>
-            <th>Phase</th>
-            <th className="num">Spans</th>
-            <th className="num">p50</th>
-            <th className="num">p95</th>
-            <th className="num">Failures</th>
+            <th className={TH}>Phase</th>
+            <th className={TH_NUM}>Spans</th>
+            <th className={TH_NUM}>p50</th>
+            <th className={TH_NUM}>p95</th>
+            <th className={TH_NUM}>Failures</th>
           </tr>
         </thead>
         <tbody>
           {rows.map((row) => (
-            <tr key={row.phase}>
-              <td className="mono">{row.phase}</td>
-              <td className="num">{row.spans}</td>
-              <td className="num">{row.p50_ms.toLocaleString()}ms</td>
-              <td className="num">{row.p95_ms.toLocaleString()}ms</td>
-              <td className="num">
+            <tr key={row.phase} className="transition hover:bg-panel-2/55">
+              <td className={`${TD} font-mono text-[11.5px] text-cyan`}>{row.phase}</td>
+              <td className={TD_NUM}>{row.spans}</td>
+              <td className={TD_NUM}>{row.p50_ms.toLocaleString()}ms</td>
+              <td className={TD_NUM}>{row.p95_ms.toLocaleString()}ms</td>
+              <td className={TD_NUM}>
                 {row.failures > 0 ? (
-                  <span className="cell-fail">{row.failures}</span>
+                  <span className="font-semibold text-red">{row.failures}</span>
                 ) : (
-                  <span className="cell-clean">0</span>
+                  <span className="text-faint">0</span>
                 )}
               </td>
             </tr>
@@ -291,23 +316,30 @@ function LatencyTable({ rows }: { rows: OverviewMetrics["latency_by_phase"] }) {
   );
 }
 
-function AcceptanceTable({ rows }: { rows: OverviewMetrics["acceptance_rate_by_category"] }) {
+function AcceptanceTable({
+  rows,
+}: {
+  rows: OverviewMetrics["acceptance_rate_by_category"];
+}) {
   if (rows.length === 0) {
-    return <p className="table-null">No review decisions recorded yet.</p>;
+    return <p className="m-0 p-6 text-center text-[12.5px] leading-[1.6] text-faint">No review decisions recorded yet.</p>;
   }
   return (
-    <div className="acceptance-list">
+    <div className="grid gap-1 px-[18px] pt-3 pb-[18px]">
       {rows.map((row) => (
-        <div className="acceptance-row" key={row.category}>
-          <div className="acceptance-top">
-            <span className="mono">{titleCase(row.category)}</span>
-            <span className="acceptance-meta">
+        <div key={row.category} className="grid gap-[7px] border-b border-line/60 py-[11px] last:border-b-0">
+          <div className="flex items-baseline justify-between gap-2.5">
+            <span className="font-mono tabular-nums text-ink">{titleCase(row.category)}</span>
+            <span className="font-mono text-[10.5px] tabular-nums text-faint">
               {row.accepted}/{row.total} · {formatPercent(row.acceptance_rate)}
             </span>
           </div>
-          <div className="rate-track" aria-hidden="true">
+          <div
+            className="h-[5px] overflow-hidden rounded-full border border-line bg-panel-2"
+            aria-hidden="true"
+          >
             <span
-              className="rate-fill"
+              className="block h-full min-w-0.5 rounded-full bg-lime"
               style={{ width: `${Math.min(100, row.acceptance_rate * 100)}%` }}
             />
           </div>
@@ -317,24 +349,28 @@ function AcceptanceTable({ rows }: { rows: OverviewMetrics["acceptance_rate_by_c
   );
 }
 
-function LearningOutcomeTable({ rows }: { rows: OverviewMetrics["learning_outcomes"] }) {
+function LearningOutcomeTable({
+  rows,
+}: {
+  rows: OverviewMetrics["learning_outcomes"];
+}) {
   if (rows.length === 0) {
-    return <p className="table-null">No learning outcomes recorded yet.</p>;
+    return <p className="m-0 p-6 text-center text-[12.5px] leading-[1.6] text-faint">No learning outcomes recorded yet.</p>;
   }
   return (
-    <div className="data-table-wrap">
-      <table className="data-table">
+    <div className="overflow-x-auto">
+      <table className="w-full border-collapse text-[12.5px]">
         <thead>
           <tr>
-            <th>Outcome</th>
-            <th className="num">Findings</th>
+            <th className={TH}>Outcome</th>
+            <th className={TH_NUM}>Findings</th>
           </tr>
         </thead>
         <tbody>
           {rows.map((row) => (
-            <tr key={row.outcome}>
-              <td className="mono">{titleCase(row.outcome)}</td>
-              <td className="num">{row.count}</td>
+            <tr key={row.outcome} className="transition hover:bg-panel-2/55">
+              <td className={`${TD} font-mono text-[11.5px] text-cyan`}>{titleCase(row.outcome)}</td>
+              <td className={TD_NUM}>{row.count}</td>
             </tr>
           ))}
         </tbody>
