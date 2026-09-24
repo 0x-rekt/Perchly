@@ -1,12 +1,13 @@
 import logging
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.schemas.reviews import EditReviewRequest, FixPullRequestRequest, ReviewDecisionRequest
 from app.core.config import github_app_credentials
 from app.services.fix_pr import FixPatch, FixPrError, PatchFile, build_patch, create_fix_pr
 from app.services.github_api import GitHubApiError, GitHubAppClient
+from app.services.auth import get_current_user
 from app.services.review_queue import ReviewQueueService
 from app.temporal.client import (
     review_workflow_id,
@@ -14,49 +15,50 @@ from app.temporal.client import (
 )
 from app.temporal.workflows import ReviewDecisionInput
 
-router = APIRouter(prefix="/reviews", tags=["reviews"])
+router = APIRouter(prefix="/reviews", tags=["reviews"], dependencies=[Depends(get_current_user)])
 queue = ReviewQueueService()
 logger = logging.getLogger(__name__)
 
 
 @router.get("/queue")
-async def list_review_queue() -> list[dict[str, Any]]:
-    return await queue.list_items()
+async def list_review_queue(user: dict[str, Any] = Depends(get_current_user)) -> list[dict[str, Any]]:
+    return await queue.list_items(workspace_id=_workspace_id(user))
 
 
 @router.get("/queue/{queue_item_id}")
-async def get_review_queue_item(queue_item_id: int) -> dict[str, Any]:
-    item = await _require_item(queue_item_id)
+async def get_review_queue_item(queue_item_id: int, user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
+    item = await _require_item(queue_item_id, _workspace_id(user))
     return _with_workflow_id(item)
 
 
 @router.post("/queue/{queue_item_id}/approve")
-async def approve_review(queue_item_id: int, request: ReviewDecisionRequest) -> dict[str, Any]:
-    return await _resolve(queue_item_id, "approve", request.reviewer, request.comment)
+async def approve_review(queue_item_id: int, request: ReviewDecisionRequest, user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
+    return await _resolve(queue_item_id, "approve", request.reviewer, request.comment, workspace_id=_workspace_id(user))
 
 
 @router.post("/queue/{queue_item_id}/reject")
-async def reject_review(queue_item_id: int, request: ReviewDecisionRequest) -> dict[str, Any]:
-    return await _resolve(queue_item_id, "reject", request.reviewer, request.comment)
+async def reject_review(queue_item_id: int, request: ReviewDecisionRequest, user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
+    return await _resolve(queue_item_id, "reject", request.reviewer, request.comment, workspace_id=_workspace_id(user))
 
 
 @router.post("/queue/{queue_item_id}/edit")
-async def edit_review(queue_item_id: int, request: EditReviewRequest) -> dict[str, Any]:
+async def edit_review(queue_item_id: int, request: EditReviewRequest, user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
     return await _resolve(
         queue_item_id,
         "edit",
         request.reviewer,
         request.comment,
-        request.edited_review.model_dump(),
+        request.edited_review.model_dump(), workspace_id=_workspace_id(user),
     )
 
 
 @router.post("/queue/{queue_item_id}/findings/{finding_id}/fix-pr/preview")
 async def preview_fix_pr(
-    queue_item_id: int, finding_id: str, request: FixPullRequestRequest
+    queue_item_id: int, finding_id: str, request: FixPullRequestRequest,
+    user: dict[str, Any] = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Generate and persist a patch without changing GitHub."""
-    item = await _require_item(queue_item_id)
+    item = await _require_item(queue_item_id, _workspace_id(user))
     if item["status"] != "pending":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Review is already resolved")
     review = item.get("review_payload", {}).get("review", {})
@@ -95,14 +97,14 @@ async def preview_fix_pr(
 
 
 @router.post("/fix-pr/{fix_id}/create")
-async def create_review_fix_pr(fix_id: int, request: FixPullRequestRequest) -> dict[str, Any]:
+async def create_review_fix_pr(fix_id: int, request: FixPullRequestRequest, user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
     """Create the already-previewed patch, idempotently."""
     fix = await queue.get_fix_preview(fix_id)
     if fix is None:
         raise HTTPException(status_code=404, detail="Fix preview not found")
     if fix["status"] == "created" and fix.get("pull_request_url"):
         return {"fix_id": fix_id, "pull_request_url": fix["pull_request_url"], "branch": fix["branch"]}
-    item = await _require_item(int(fix["queue_item_id"]))
+    item = await _require_item(int(fix["queue_item_id"]), _workspace_id(user))
     installation_id = item.get("review_payload", {}).get("installation_id")
     if not isinstance(installation_id, int):
         raise HTTPException(status_code=409, detail="This review does not have GitHub installation context")
@@ -147,8 +149,23 @@ async def create_review_fix_pr(fix_id: int, request: FixPullRequestRequest) -> d
     return {"fix_id": fix_id, "pull_request_url": result.url, "branch": result.branch}
 
 
-async def _require_item(queue_item_id: int) -> dict[str, Any]:
-    item = await queue.get_item(queue_item_id)
+def _workspace_id(user: dict[str, Any]) -> int | None:
+    # Direct function calls in unit tests do not run FastAPI dependency
+    # injection; HTTP requests always receive a real user mapping here.
+    if not isinstance(user, dict):
+        return None
+    workspace_id = user.get("workspace_id")
+    if not isinstance(workspace_id, int):
+        raise HTTPException(status_code=403, detail="User is not assigned to a workspace")
+    return workspace_id
+
+
+async def _require_item(queue_item_id: int, workspace_id: int | None = None) -> dict[str, Any]:
+    item = (
+        await queue.get_item(queue_item_id)
+        if workspace_id is None
+        else await queue.get_item(queue_item_id, workspace_id=workspace_id)
+    )
     if item is None:
         raise HTTPException(status_code=404, detail="Review queue item not found")
     return item
@@ -160,8 +177,9 @@ async def _resolve(
     reviewer: str,
     comment: str | None,
     edited_review: dict[str, Any] | None = None,
+    workspace_id: int | None = None,
 ) -> dict[str, Any]:
-    item = await _require_item(queue_item_id)
+    item = await _require_item(queue_item_id, workspace_id)
     if item["status"] != "pending":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Review is already resolved")
 
@@ -184,7 +202,7 @@ async def _resolve(
 
     # The workflow activity may not have run yet, so the item can remain
     # pending briefly after the signal is accepted.
-    updated = await _require_item(queue_item_id)
+    updated = await _require_item(queue_item_id, workspace_id)
     return {**_with_workflow_id(updated), "decision": decision, "accepted": True}
 
 

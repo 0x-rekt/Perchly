@@ -185,6 +185,7 @@ def _emit_llm_span(
             output_summary=output_summary,
             status=status,
             error_message=error_message,
+            workspace_id=ctx.workspace_id,
         )
     except Exception:
         pass

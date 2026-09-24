@@ -41,7 +41,7 @@ def _pending_examples(limit: int) -> list[dict[str, Any]]:
         rows = _run(
             connection,
             """
-            SELECT id, repository, pr_number, head_sha,
+            SELECT id, workspace_id, repository, pr_number, head_sha,
                    finding_json, final_outcome
             FROM outcome_examples
             WHERE embedding IS NULL
@@ -53,11 +53,12 @@ def _pending_examples(limit: int) -> list[dict[str, Any]]:
         return [
             {
                 "id": int(row[0]),
-                "repository": row[1],
-                "pr_number": int(row[2]),
-                "head_sha": row[3],
-                "finding": json.loads(row[4]) if isinstance(row[4], str) else row[4],
-                "outcome": row[5],
+                "workspace_id": row[1],
+                "repository": row[2],
+                "pr_number": int(row[3]),
+                "head_sha": row[4],
+                "finding": json.loads(row[5]) if isinstance(row[5], str) else row[5],
+                "outcome": row[6],
             }
             for row in rows
         ]
@@ -104,6 +105,7 @@ async def embed_pending_outcomes(*, limit: int = 20) -> int:
                 pr_number=example["pr_number"],
                 head_sha=example["head_sha"],
                 agent="outcome_retrieval",
+                workspace_id=example.get("workspace_id"),
             )
             vector = await asyncio.to_thread(
                 _embed,
@@ -128,10 +130,11 @@ async def find_similar_outcomes(
     category: str,
     finding: Finding | dict[str, Any],
     limit: int = 5,
+    workspace_id: int | None = None,
 ) -> list[dict[str, Any]]:
     """Return nearest historical examples for a category in a repository."""
     client = genai.Client(api_key=gemini_api_key())
-    context = ReviewContext(repository=repository, agent="outcome_retrieval")
+    context = ReviewContext(repository=repository, agent="outcome_retrieval", workspace_id=workspace_id)
     vector = await asyncio.to_thread(
         _embed,
         client,
@@ -149,11 +152,13 @@ async def find_similar_outcomes(
             SELECT id, finding_json, final_outcome,
                    1 - (embedding <=> %s) AS similarity
             FROM outcome_examples
-            WHERE repository = %s AND category = %s AND embedding IS NOT NULL
+            WHERE repository = %s AND category = %s
+              AND (%s IS NULL OR workspace_id = %s)
+              AND embedding IS NOT NULL
             ORDER BY embedding <=> %s
             LIMIT %s
             """,
-            (Vector(vector[0]), repository, category, Vector(vector[0]), limit),
+            (Vector(vector[0]), repository, category, workspace_id, workspace_id, Vector(vector[0]), limit),
         )
         return [
             {

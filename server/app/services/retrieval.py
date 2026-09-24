@@ -375,6 +375,7 @@ def _emit_embedding_span(
             input_summary=content[:500],
             status=status,
             error_message=error_message,
+            workspace_id=ctx.workspace_id,
         )
     except Exception:
         pass

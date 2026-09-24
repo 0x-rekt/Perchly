@@ -7,8 +7,10 @@ from urllib.parse import urlencode
 
 import httpx
 import jwt
+from fastapi import Cookie, HTTPException, status
 
 from app.core.config import (
+    GITHUB_APP_SLUG,
     GITHUB_OAUTH_CLIENT_ID,
     GITHUB_OAUTH_CLIENT_SECRET,
     GITHUB_OAUTH_REDIRECT_URI,
@@ -19,6 +21,22 @@ from app.core.config import (
 
 class AuthError(RuntimeError):
     pass
+
+
+def get_current_user(perchly_session: str | None = Cookie(default=None)) -> dict[str, Any]:
+    """FastAPI dependency used by all authenticated dashboard APIs."""
+    user = read_session(perchly_session)
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return user
+
+
+def get_optional_user(perchly_session: str | None = Cookie(default=None)) -> dict[str, Any] | None:
+    return read_session(perchly_session)
 
 
 def authorization_url(state: str) -> str:
@@ -91,3 +109,24 @@ def read_session(token: str | None) -> dict[str, Any] | None:
 
 def frontend_url() -> str:
     return WEB_APP_URL.rstrip("/")
+
+
+def installation_url(workspace_id: int) -> str:
+    if not GITHUB_APP_SLUG:
+        raise AuthError("GITHUB_APP_SLUG must be configured")
+    state = jwt.encode(
+        {"purpose": "github-installation", "workspace_id": workspace_id, "exp": int(time.time()) + 600},
+        session_secret(), algorithm="HS256",
+    )
+    return f"https://github.com/apps/{GITHUB_APP_SLUG}/installations/new?" + urlencode({"state": state})
+
+
+def read_installation_state(value: str | None) -> int | None:
+    if not value:
+        return None
+    try:
+        payload = jwt.decode(value, session_secret(), algorithms=["HS256"])
+    except jwt.PyJWTError:
+        return None
+    workspace_id = payload.get("workspace_id")
+    return workspace_id if payload.get("purpose") == "github-installation" and isinstance(workspace_id, int) else None

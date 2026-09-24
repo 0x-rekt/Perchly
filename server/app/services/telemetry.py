@@ -104,6 +104,7 @@ class ReviewContext:
     pr_number: int = 0
     head_sha: str = ""
     agent: str = "generalist"
+    workspace_id: int | None = None
 
 
 def emit_span(
@@ -124,6 +125,7 @@ def emit_span(
     output_summary: str | None = None,
     status: str = "success",
     error_message: str | None = None,
+    workspace_id: int | None = None,
 ) -> None:
     """Synchronous span write – call from a thread (not the event loop)."""
     cost = Decimal(str(cost_usd)) if cost_usd is not None else Decimal("0")
@@ -133,13 +135,13 @@ def emit_span(
             conn,
             """
             INSERT INTO agent_spans (
-                review_run_id, repository, pr_number, head_sha,
+                workspace_id, review_run_id, repository, pr_number, head_sha,
                 agent, phase, span_type, model,
                 tokens_in, tokens_out, cost_usd, latency_ms,
                 input_summary, output_summary,
                 status, error_message
             ) VALUES (
-                %s, %s, %s, %s,
+                %s, %s, %s, %s, %s,
                 %s, %s, %s, %s,
                 %s, %s, %s, %s,
                 %s, %s,
@@ -147,7 +149,7 @@ def emit_span(
             )
             """,
             (
-                review_run_id, repository, pr_number, head_sha,
+                workspace_id, review_run_id, repository, pr_number, head_sha,
                 agent, phase, span_type, model,
                 tokens_in, tokens_out, str(cost), latency_ms,
                 _redact_summary(input_summary), _redact_summary(output_summary),
@@ -176,6 +178,7 @@ async def emit_span_async(
     output_summary: str | None = None,
     status: str = "success",
     error_message: str | None = None,
+    workspace_id: int | None = None,
 ) -> None:
     """Non-blocking span write – safe to await from the event loop."""
     try:
@@ -197,6 +200,7 @@ async def emit_span_async(
             output_summary=output_summary,
             status=status,
             error_message=error_message,
+            workspace_id=workspace_id,
         )
     except Exception:
         logger.warning(
@@ -217,6 +221,7 @@ def query_spans(
     since: datetime | None = None,
     until: datetime | None = None,
     limit: int = 200,
+    workspace_id: int | None = None,
 ) -> list[dict[str, Any]]:
     """Return raw spans filtered by repository, run, and optional time window."""
     conditions: list[str] = []
@@ -225,6 +230,9 @@ def query_spans(
     if review_run_id:
         conditions.append("review_run_id = %s")
         params.append(review_run_id)
+    if workspace_id is not None:
+        conditions.append("workspace_id = %s")
+        params.append(workspace_id)
     if repository:
         conditions.append("repository = %s")
         params.append(repository)
@@ -249,7 +257,7 @@ def query_spans(
             conn,
             f"""
             SELECT
-                id, review_run_id, repository, pr_number, head_sha,
+                id, workspace_id, review_run_id, repository, pr_number, head_sha,
                 agent, phase, span_type, model,
                 tokens_in, tokens_out, cost_usd, latency_ms,
                 input_summary, output_summary,
@@ -265,7 +273,7 @@ def query_spans(
     rows = _execute(operation)
 
     fields = (
-        "id", "review_run_id", "repository", "pr_number", "head_sha",
+        "id", "workspace_id", "review_run_id", "repository", "pr_number", "head_sha",
         "agent", "phase", "span_type", "model",
         "tokens_in", "tokens_out", "cost_usd", "latency_ms",
         "input_summary", "output_summary",
@@ -274,7 +282,7 @@ def query_spans(
     return [dict(zip(fields, row, strict=True)) for row in rows]
 
 
-def overview_metrics(days: int = 14) -> dict[str, Any]:
+def overview_metrics(days: int = 14, workspace_id: int | None = None) -> dict[str, Any]:
     """Aggregate volume, cost, latency, queue, and acceptance-rate metrics."""
 
     def operation(conn) -> None:
@@ -294,7 +302,7 @@ def overview_metrics(days: int = 14) -> dict[str, Any]:
             ORDER BY day::date
             """,
             (days,),
-        )
+        ) if workspace_id is None else []
         per_day_rows.append(
             aggregate_per_day
             or safe(
@@ -302,10 +310,11 @@ def overview_metrics(days: int = 14) -> dict[str, Any]:
                 SELECT created_at::date AS day, count(DISTINCT review_run_id) AS reviews
                 FROM agent_spans
                 WHERE created_at >= CURRENT_TIMESTAMP - (%s * INTERVAL '1 day')
+                  AND (%s IS NULL OR workspace_id = %s)
                 GROUP BY created_at::date
                 ORDER BY created_at::date
                 """,
-                (days,),
+                (days, workspace_id, workspace_id),
             )
         )
         aggregate_cost = safe(
@@ -314,7 +323,7 @@ def overview_metrics(days: int = 14) -> dict[str, Any]:
             FROM daily_review_metrics
             WHERE day >= CURRENT_TIMESTAMP - (7 * INTERVAL '1 day')
             """
-        )
+        ) if workspace_id is None else []
         cost_rows.append(
             aggregate_cost
             or safe(
@@ -322,7 +331,9 @@ def overview_metrics(days: int = 14) -> dict[str, Any]:
                 SELECT COALESCE(sum(cost_usd), 0), count(DISTINCT review_run_id)
                 FROM agent_spans
                 WHERE created_at >= CURRENT_TIMESTAMP - (7 * INTERVAL '1 day')
-                """
+                  AND (%s IS NULL OR workspace_id = %s)
+                """,
+                (workspace_id, workspace_id),
             )
         )
         aggregate_latency = safe(
@@ -336,7 +347,7 @@ def overview_metrics(days: int = 14) -> dict[str, Any]:
             GROUP BY phase
             ORDER BY 4 DESC
             """
-        )
+        ) if workspace_id is None else []
         latency_rows.append(
             aggregate_latency
             or safe(
@@ -348,9 +359,11 @@ def overview_metrics(days: int = 14) -> dict[str, Any]:
                 FROM agent_spans
                 WHERE created_at >= CURRENT_TIMESTAMP - (7 * INTERVAL '1 day')
                   AND phase <> ''
+                  AND (%s IS NULL OR workspace_id = %s)
                 GROUP BY phase
                 ORDER BY 4 DESC
-                """
+                """,
+                (workspace_id, workspace_id),
             )
         )
         queue_rows.append(
@@ -362,7 +375,9 @@ def overview_metrics(days: int = 14) -> dict[str, Any]:
                        ), 0)
                 FROM review_queue
                 WHERE status = 'pending'
-                """
+                  AND (%s IS NULL OR workspace_id = %s)
+                """,
+                (workspace_id, workspace_id),
             )
         )
         acceptance_rows.append(
@@ -377,6 +392,7 @@ def overview_metrics(days: int = 14) -> dict[str, Any]:
                         COALESCE(ro.review_payload_json -> 'findings', '[]'::jsonb)
                     ) AS f
                     WHERE ro.outcome = 'auto_post'
+                      AND (%s IS NULL OR ro.workspace_id = %s)
                     UNION ALL
                     SELECT f.value ->> 'category',
                            (d.decision IN ('approve', 'edit'))
@@ -391,10 +407,12 @@ def overview_metrics(days: int = 14) -> dict[str, Any]:
                             '[]'::jsonb
                         )
                     ) AS f
+                    WHERE (%s IS NULL OR q.workspace_id = %s)
                 ) s
                 GROUP BY category
                 ORDER BY total DESC
-                """
+                """,
+                (workspace_id, workspace_id, workspace_id, workspace_id),
             )
         )
         learning_rows.append(
@@ -403,10 +421,11 @@ def overview_metrics(days: int = 14) -> dict[str, Any]:
                 SELECT final_outcome, count(*)::integer
                 FROM outcome_examples
                 WHERE created_at >= CURRENT_TIMESTAMP - (%s * INTERVAL '1 day')
+                  AND (%s IS NULL OR workspace_id = %s)
                 GROUP BY final_outcome
                 ORDER BY final_outcome
                 """,
-                (days,),
+                (days, workspace_id, workspace_id),
             )
         )
 
@@ -491,6 +510,7 @@ def list_traces(
     since: datetime | None = None,
     until: datetime | None = None,
     limit: int = 50,
+    workspace_id: int | None = None,
 ) -> list[dict[str, Any]]:
     """Group spans into review runs (traces), newest first."""
     conditions: list[str] = []
@@ -498,6 +518,9 @@ def list_traces(
     if repository:
         conditions.append("s.repository = %s")
         params.append(repository)
+    if workspace_id is not None:
+        conditions.append("s.workspace_id = %s")
+        params.append(workspace_id)
     if agent:
         conditions.append("s.agent = %s")
         params.append(agent)
@@ -540,9 +563,9 @@ def list_traces(
     return [_trace_summary(row) for row in rows]
 
 
-def get_trace(*, review_run_id: str) -> dict[str, Any] | None:
+def get_trace(*, review_run_id: str, workspace_id: int | None = None) -> dict[str, Any] | None:
     """Return one trace with its ordered spans and a run summary."""
-    spans = query_spans(review_run_id=review_run_id, limit=500)
+    spans = query_spans(review_run_id=review_run_id, workspace_id=workspace_id, limit=500)
     if not spans:
         return None
 
@@ -745,6 +768,7 @@ def _instrument_activity(fn: F, *, phase: str) -> F:
                     latency_ms=latency_ms,
                     status="failed",
                     error_message=f"{type(exc).__name__}: {exc}",
+                    workspace_id=ctx.get("workspace_id"),
                 )
                 raise
 
@@ -759,6 +783,7 @@ def _instrument_activity(fn: F, *, phase: str) -> F:
                 span_type="activity",
                 latency_ms=latency_ms,
                 status="success",
+                workspace_id=ctx.get("workspace_id"),
             )
             return result
 
@@ -781,6 +806,7 @@ def _extract_activity_context(
         "pr_number": 0,
         "head_sha": "",
         "agent": default_agent,
+        "workspace_id": None,
     }
     try:
         from temporalio import activity as _activity
@@ -799,6 +825,11 @@ def _extract_activity_context(
 def _collect_correlation(ctx: dict[str, Any], value: Any) -> None:
     """Recursively find repository/pr_number/head_sha anywhere in a payload."""
     if isinstance(value, dict):
+        if ctx.get("workspace_id") is None and value.get("workspace_id") not in (None, ""):
+            try:
+                ctx["workspace_id"] = int(value["workspace_id"])
+            except (TypeError, ValueError):
+                pass
         for key in ("repository", "head_sha"):
             if key in value and value[key] not in (None, "") and not ctx[key]:
                 ctx[key] = str(value[key])
@@ -878,6 +909,7 @@ def _create_agent_spans(conn) -> None:
         """
         CREATE TABLE IF NOT EXISTS agent_spans (
             id              BIGSERIAL,
+            workspace_id    BIGINT,
             review_run_id   TEXT           NOT NULL,
             repository      TEXT           NOT NULL,
             pr_number       INTEGER        NOT NULL,
@@ -900,6 +932,7 @@ def _create_agent_spans(conn) -> None:
         )
         """,
     )
+    _run(conn, "ALTER TABLE agent_spans ADD COLUMN IF NOT EXISTS workspace_id BIGINT")
 
 
 def _create_hypertable(conn) -> None:
@@ -915,6 +948,7 @@ def _create_hypertable(conn) -> None:
 def _create_indexes(conn) -> None:
     for ddl in [
         "CREATE INDEX IF NOT EXISTS idx_agent_spans_run_id  ON agent_spans (review_run_id, created_at DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_agent_spans_workspace ON agent_spans (workspace_id, created_at DESC)",
         "CREATE INDEX IF NOT EXISTS idx_agent_spans_repo_pr ON agent_spans (repository, pr_number, created_at DESC)",
         "CREATE INDEX IF NOT EXISTS idx_agent_spans_agent   ON agent_spans (agent, created_at DESC)",
         "CREATE INDEX IF NOT EXISTS idx_agent_spans_phase   ON agent_spans (phase, created_at DESC)",
