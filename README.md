@@ -4,7 +4,7 @@
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.141-009688?logo=fastapi)](https://fastapi.tiangolo.com)
 [![Temporal](https://img.shields.io/badge/Temporal-1.33-8358FF)](https://temporal.io)
 
-**An AI pull-request review agent.** Perchly hooks into a GitHub repository via a GitHub App. Every time a pull request is opened or updated, four LLM specialist agents run in parallel — covering **security**, **code quality**, **test coverage**, and **documentation** — and post a single structured review back to the PR. Findings that don't meet the configured confidence threshold are held in a **human-in-the-loop approval queue** instead of being posted automatically.
+**An AI pull-request review agent.** Perchly hooks into repositories through a GitHub App. For supported pull-request events, four LLM specialists run in parallel — **security**, **code quality**, **test coverage**, and **documentation**. Reviews that pass the configured policy are posted automatically; uncertain or high-risk reviews go to a **human-in-the-loop approval queue**.
 
 Every agent action, LLM call, and human decision is recorded as a span in a queryable PostgreSQL table. A live dashboard surfaces cost per review, latency by phase, HITL queue depth, and per-category acceptance rates.
 
@@ -48,7 +48,7 @@ human-reviewable PRs; Perchly ignores their webhook events to prevent recursive 
 | Docker + Docker Compose        | v2.20+ recommended                                                                                                                                                                                                                                               |
 | GitHub App                     | [Create one](https://docs.github.com/en/apps/creating-github-apps/creating-github-apps/creating-a-github-app) with `Pull requests: Read & Write`, `Contents: Read & Write`, `Checks: Read & Write`, webhooks for `pull_request` and `pull_request_review` events |
 | Gemini API key                 | [Google AI Studio](https://aistudio.google.com)                                                                                                                                                                                                                  |
-| Cloud PostgreSQL with pgvector | [Neon](https://neon.tech) free tier works. Enable the `vector` extension.                                                                                                                                                                                        |
+| Cloud PostgreSQL with pgvector | Any PostgreSQL provider that supports the `vector` extension; enable it for the database.                                                                                                                                                                          |
 | ngrok account (optional)       | For exposing the webhook endpoint locally                                                                                                                                                                                                                        |
 
 ### Steps
@@ -60,7 +60,7 @@ cd perchly
 cp .env.docker.example .env
 ```
 
-Edit `.env` with your credentials (see [§6 Configuration](#6-configuration-reference)).
+Edit `.env` with your credentials (see [§6 Configuration](#6-configuration-reference)). Configure both a GitHub App and GitHub OAuth callback, and generate a `SESSION_SECRET` of at least 32 characters. The observability dashboard uses the signed-in session; no observability API key is needed.
 
 **2. Add your GitHub App private key**
 
@@ -142,7 +142,7 @@ flowchart LR
 | Orchestration    | **Temporal** (Python SDK 1.33)                    | Durable execution; native pause/resume via signals for HITL; per-activity retries and timeouts |
 | LLM              | **Google Gemini** (`gemini-3.8-flash`)            | Structured tool-use output for typed findings; co-located embedding API                        |
 | Embeddings       | **Gemini Embedding** (`gemini-embedding-2`, 768d) | Code-aware embeddings; same API key as generation                                              |
-| Vector store     | **pgvector** on Neon PostgreSQL                   | Avoids a second database; same connection as queue and spans                                   |
+| Vector store     | **pgvector** on cloud-hosted PostgreSQL           | Avoids a second database; retrieval, queue, and spans share the PostgreSQL service               |
 | Webhook / API    | **FastAPI** + uvicorn                             | Async, typed, pairs well with Temporal Python SDK                                              |
 | Worker process   | **uv** + Temporal activity worker                 | Separate process from API server; isolated failure domain                                      |
 | Frontend         | **React 19** + TypeScript + Vite + Tailwind       | SPA proxied to the API; dark terminal aesthetic                                                |
@@ -163,7 +163,7 @@ POST /webhooks/github
 
 1. **Signature verification** — HMAC-SHA256 over the raw request body using `GITHUB_WEBHOOK_SECRET`. Returns 401 if invalid.
 2. **Event filtering** — Only `pull_request` events with actions `opened`, `reopened`, `synchronize` are processed. Review and comment events are used for outcome tracking only.
-3. **Idempotency** — An in-process `IdempotencyStore` (keyed by `delivery_id + repository + pr_number + head_sha`) prevents duplicate Temporal workflows when GitHub retries a delivery.
+3. **Idempotency** — A durable SQLite `IdempotencyStore` beneath `PERCHLY_DATA_DIRECTORY` deduplicates webhook delivery IDs and PR-head review runs before workflows start.
 4. **Outcome tracking** — `pull_request_review`, `pull_request_review_comment`, and `issue_comment` events containing Perchly's HTML marker update `outcome_examples` with `merged`/`dismissed` signals.
 5. **Async hand-off** — Returns `202 Accepted` within milliseconds; all review work happens durably in Temporal.
 
@@ -323,7 +323,7 @@ Span fields: `review_run_id`, `repository`, `pr_number`, `head_sha`, `agent`, `p
 
 - `daily_review_metrics` — per-day: review count, total cost, p50/p95 latency, acceptance rates.
 
-**Dashboard endpoints** (`/observability/*`) require the signed-in GitHub session and a workspace assignment, matching the review console.
+**Dashboard endpoints** (`/observability/*`) require the signed-in GitHub session and a workspace assignment, matching the review console. Telemetry queries are not yet filtered by workspace; do not treat the dashboard as tenant-isolated.
 
 ### 3.8 Learning Loop
 
@@ -345,99 +345,253 @@ Before each specialist agent runs, a small number of similar past findings (retr
 
 ## 4. Data Model
 
-```sql
--- Every LLM/tool call recorded as a span
-agent_spans (
-  id              BIGSERIAL PRIMARY KEY,
-  review_run_id   TEXT NOT NULL,
-  repository      TEXT NOT NULL,
-  pr_number       INTEGER NOT NULL,
-  head_sha        TEXT NOT NULL,
-  agent           TEXT NOT NULL,
-  phase           TEXT NOT NULL DEFAULT '',
-  span_type       TEXT NOT NULL,          -- llm_call | tool_call | retrieval
-  model           TEXT,
-  tokens_in       INTEGER NOT NULL DEFAULT 0,
-  tokens_out      INTEGER NOT NULL DEFAULT 0,
-  cost_usd        NUMERIC(12,8) NOT NULL DEFAULT 0,
-  latency_ms      INTEGER NOT NULL,
-  input_summary   TEXT,
-  output_summary  TEXT,
-  status          TEXT NOT NULL DEFAULT 'success',
-  error_message   TEXT,
-  created_at      TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
-)
+PostgreSQL tables are initialized at runtime via `CREATE TABLE IF NOT EXISTS` DDL (no Alembic/Prisma migrations). All table DDL lives in the service modules under `server/app/services/`.
 
--- HITL queue
-review_queue (
-  id                       BIGSERIAL PRIMARY KEY,
-  delivery_id              TEXT NOT NULL,
-  repository               TEXT NOT NULL,
-  pr_number                INTEGER NOT NULL,
-  head_sha                 TEXT NOT NULL,
-  review_payload_json      JSONB NOT NULL,
-  specialist_failures_json JSONB NOT NULL DEFAULT '{}',
-  status                   TEXT NOT NULL DEFAULT 'pending'
-                           CHECK (status IN ('pending','approved','rejected','edited','expired')),
-  reason                   TEXT NOT NULL,
-  created_at               TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at               TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  resolved_at              TIMESTAMPTZ,
-  resolved_by              TEXT,
-  UNIQUE (repository, pr_number, head_sha)
-)
+### Core tables
 
--- Human decisions
-review_decisions (
-  id                 BIGSERIAL PRIMARY KEY,
-  queue_item_id      BIGINT NOT NULL REFERENCES review_queue(id) ON DELETE CASCADE,
-  decision           TEXT NOT NULL,      -- approve | reject | edit
-  edited_review_json JSONB,
-  reviewer           TEXT NOT NULL,
-  comment            TEXT,
-  decided_at         TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
-)
-
--- Previewed and generated agent-authored fix PRs
-fix_prs (
-  id               BIGSERIAL PRIMARY KEY,
-  queue_item_id    BIGINT NOT NULL REFERENCES review_queue(id) ON DELETE CASCADE,
-  finding_id       TEXT NOT NULL,
-  patch_json       JSONB NOT NULL,
-  reviewer         TEXT NOT NULL,
-  status           TEXT NOT NULL,        -- previewed | created | failed
-  branch           TEXT,
-  pull_request_url TEXT,
-  created_at       TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at       TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  UNIQUE (queue_item_id, finding_id)
-)
-
--- Learning: past findings as few-shot context
-outcome_examples (
-  id                   BIGSERIAL PRIMARY KEY,
-  repository           TEXT NOT NULL,
-  pr_number            INTEGER NOT NULL,
-  head_sha             TEXT NOT NULL,
-  finding_id           TEXT NOT NULL,
-  category             TEXT NOT NULL,
-  finding_json         JSONB NOT NULL,
-  final_outcome        TEXT NOT NULL,   -- approved | edited | rejected | dismissed
-  reviewer             TEXT,
-  source_queue_item_id BIGINT,
-  source_review_run_id TEXT,
-  created_at           TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  UNIQUE (repository, pr_number, head_sha, finding_id)
-)
-
--- Code retrieval
-code_chunks (id, repository, path, revision, chunk_index, content, created_at)
-embeddings  (id, chunk_id REFERENCES code_chunks, embedding VECTOR(768), created_at)
-
--- Dashboard aggregate (materialized view, refreshed every 5 min)
-daily_review_metrics (day, total_reviews, total_cost_usd, avg_cost_per_review_usd,
-                      p50_latency_ms, p95_latency_ms, total_accepted, acceptance_rate)
+```mermaid
+erDiagram
+    users ||--o{ workspaces : "created_by"
+    users ||--o{ workspace_members : "member_of"
+    workspaces ||--o{ workspace_members : "has_member"
+    workspaces ||--o{ github_installations : "owns"
+    users ||--o{ auth_sessions : "has"
+    workspaces ||--o{ review_queue : "scopes (logical)"
+    review_queue ||--o{ review_decisions : "decided_by"
+    review_queue ||--o{ fix_prs : "has_fix"
+    review_queue ||--o{ outcome_examples : "source_queue_item_id (logical)"
+    repositories ||--o{ code_chunks : "contains"
+    code_chunks ||--o| embeddings : "vector_of (1:1)"
+    repositories ||--o{ review_context : "context_of"
+    code_chunks ||--o{ review_context : "selected_chunk"
 ```
+
+```text
+users
+  id              BIGSERIAL               PK
+  github_id       BIGINT   NOT NULL   UNIQUE
+  login           TEXT     NOT NULL
+  name            TEXT     NOT NULL
+  avatar_url      TEXT                  nullable
+  created_at      TIMESTAMPTZ NOT NULL  DEFAULT CURRENT_TIMESTAMP
+  updated_at      TIMESTAMPTZ NOT NULL  DEFAULT CURRENT_TIMESTAMP
+
+workspaces
+  id              BIGSERIAL               PK
+  name            TEXT     NOT NULL
+  slug            TEXT     NOT NULL   UNIQUE
+  created_by_user_id BIGINT            REFERENCES users(id)
+  created_at      TIMESTAMPTZ NOT NULL  DEFAULT CURRENT_TIMESTAMP
+  updated_at      TIMESTAMPTZ NOT NULL  DEFAULT CURRENT_TIMESTAMP
+
+workspace_members
+  workspace_id    BIGINT   NOT NULL   FK→workspaces(id) ON DELETE CASCADE
+  user_id         BIGINT   NOT NULL   FK→users(id) ON DELETE CASCADE
+  role            TEXT     NOT NULL   DEFAULT 'member'
+                          CHECK (role IN ('owner','admin','member'))
+  created_at      TIMESTAMPTZ NOT NULL  DEFAULT CURRENT_TIMESTAMP
+  PRIMARY KEY (workspace_id, user_id)
+
+github_installations
+  id              BIGSERIAL               PK
+  installation_id BIGINT   NOT NULL   UNIQUE
+  workspace_id    BIGINT   NOT NULL   FK→workspaces(id) ON DELETE CASCADE
+  account_login   TEXT                  nullable
+  account_type    TEXT                  nullable
+  created_at      TIMESTAMPTZ NOT NULL  DEFAULT CURRENT_TIMESTAMP
+  updated_at      TIMESTAMPTZ NOT NULL  DEFAULT CURRENT_TIMESTAMP
+
+auth_sessions
+  id              UUID      PRIMARY KEY
+  user_id         BIGINT   NOT NULL   FK→users(id) ON DELETE CASCADE
+  expires_at      TIMESTAMPTZ NOT NULL
+  revoked_at      TIMESTAMPTZ                  nullable
+  created_at      TIMESTAMPTZ NOT NULL  DEFAULT CURRENT_TIMESTAMP
+
+review_queue
+  id              BIGSERIAL               PK
+  workspace_id    BIGINT                         logical FK→workspaces(id) [no FK constraint, added via ALTER TABLE]
+  delivery_id     TEXT     NOT NULL
+  repository      TEXT     NOT NULL
+  pr_number       INTEGER  NOT NULL
+  head_sha        TEXT     NOT NULL
+  review_payload_json JSONB   NOT NULL
+  specialist_failures_json JSONB   NOT NULL DEFAULT '{}'::jsonb
+  status          TEXT     NOT NULL   DEFAULT 'pending'
+                          CHECK (status IN ('pending','approved','rejected','edited','expired'))
+  reason          TEXT     NOT NULL
+  created_at      TIMESTAMPTZ NOT NULL  DEFAULT CURRENT_TIMESTAMP
+  updated_at      TIMESTAMPTZ NOT NULL  DEFAULT CURRENT_TIMESTAMP
+  resolved_at     TIMESTAMPTZ                 nullable
+  resolved_by     TEXT                  nullable
+  UNIQUE (repository, pr_number, head_sha)
+
+review_outcomes
+  id              BIGSERIAL               PK
+  delivery_id     TEXT     NOT NULL
+  repository      TEXT     NOT NULL
+  pr_number       INTEGER  NOT NULL
+  head_sha      TEXT     NOT NULL
+  outcome         TEXT     NOT NULL   (one of: auto_post, approved, edited, rejected, dismissed, resolved)
+  review_payload_json JSONB   NOT NULL
+  reason          TEXT     NOT NULL
+  created_at      TIMESTAMPTZ NOT NULL  DEFAULT CURRENT_TIMESTAMP
+  updated_at      TIMESTAMPTZ NOT NULL  DEFAULT CURRENT_TIMESTAMP
+  UNIQUE (repository, pr_number, head_sha)
+
+review_decisions
+  id                BIGSERIAL               PK
+  queue_item_id   BIGINT   NOT NULL   FK→review_queue(id) ON DELETE CASCADE
+  decision        TEXT     NOT NULL   CHECK (IN ('approve','reject','edit'))
+  edited_review_json JSONB                nullable
+  reviewer        TEXT     NOT NULL
+  comment         TEXT                  nullable
+  created_at      TIMESTAMPTZ NOT NULL  DEFAULT CURRENT_TIMESTAMP
+
+fix_prs
+  id                BIGSERIAL               PK
+  queue_item_id   BIGINT   NOT NULL   FK→review_queue(id) ON DELETE CASCADE
+  finding_id      TEXT     NOT NULL
+  patch_json      JSONB    NOT NULL
+  reviewer        TEXT     NOT NULL
+  status          TEXT     NOT NULL   CHECK (IN ('previewed','created','failed'))
+  branch          TEXT                  nullable
+  pull_request_url TEXT                 nullable
+  created_at      TIMESTAMPTZ NOT NULL  DEFAULT CURRENT_TIMESTAMP
+  updated_at      TIMESTAMPTZ NOT NULL  DEFAULT CURRENT_TIMESTAMP
+  UNIQUE (queue_item_id, finding_id)
+
+outcome_examples
+  id                  BIGSERIAL               PK
+  repository        TEXT     NOT NULL
+  pr_number         INTEGER  NOT NULL
+  head_sha        TEXT     NOT NULL
+  finding_id      TEXT     NOT NULL
+  category        TEXT     NOT NULL
+  finding_json    JSONB    NOT NULL
+  final_outcome   TEXT     NOT NULL   CHECK (IN ('auto_post','approved','edited','rejected','dismissed','resolved'))
+  reviewer        TEXT                  nullable
+  source_queue_item_id BIGINT          nullable   logical FK→review_queue(id)
+  source_review_run_id TEXT          nullable
+  embedding_model TEXT                  nullable
+  embedding       vector(768)            nullable   pgvector
+  created_at      TIMESTAMPTZ NOT NULL  DEFAULT CURRENT_TIMESTAMP
+  UNIQUE (repository, pr_number, head_sha, finding_id, final_outcome)
+
+repositories
+  id              BIGSERIAL               PK
+  full_name       TEXT     NOT NULL   UNIQUE
+  created_at      TIMESTAMPTZ NOT NULL  DEFAULT CURRENT_TIMESTAMP
+
+code_chunks
+  id                BIGSERIAL               PK
+  repository_id   BIGINT   NOT NULL   FK→repositories(id) ON DELETE CASCADE
+  head_sha        TEXT     NOT NULL
+  path            TEXT     NOT NULL
+  line_start      INTEGER  NOT NULL
+  line_end        INTEGER  NOT NULL
+  content         TEXT     NOT NULL
+  embedding_model TEXT     NOT NULL
+  created_at      TIMESTAMPTZ NOT NULL  DEFAULT CURRENT_TIMESTAMP
+  UNIQUE (repository_id, head_sha, path, line_start, line_end)
+
+embeddings
+  chunk_id        BIGINT   PRIMARY KEY   FK→code_chunks(id) ON DELETE CASCADE
+  vector          vector(768) NOT NULL   pgvector
+  model           TEXT     NOT NULL
+
+review_context
+  id                BIGSERIAL               PK
+  repository_id   BIGINT   NOT NULL   FK→repositories(id) ON DELETE CASCADE
+  head_sha        TEXT     NOT NULL
+  category        TEXT     NOT NULL   (security / quality / test_coverage / docs)
+  chunk_id        BIGINT   NOT NULL   FK→code_chunks(id) ON DELETE CASCADE
+  rank            INTEGER  NOT NULL
+  similarity      REAL     NOT NULL
+  created_at      TIMESTAMPTZ NOT NULL  DEFAULT CURRENT_TIMESTAMP
+  UNIQUE (repository_id, head_sha, category, chunk_id)
+
+agent_spans
+  id                BIGSERIAL               part of composite PK
+  review_run_id   TEXT     NOT NULL
+  repository      TEXT     NOT NULL
+  pr_number       INTEGER  NOT NULL
+  head_sha      TEXT     NOT NULL
+  agent           TEXT     NOT NULL
+  phase           TEXT     NOT NULL   DEFAULT ''
+  span_type       TEXT     NOT NULL   (llm_call | tool_call | retrieval)
+  model           TEXT                  nullable
+  tokens_in       INTEGER  NOT NULL   DEFAULT 0
+  tokens_out      INTEGER  NOT NULL   DEFAULT 0
+  cost_usd        NUMERIC(10,6) NOT NULL DEFAULT 0
+  latency_ms      INTEGER  NOT NULL
+  input_summary   TEXT                  nullable (redacted)
+  output_summary  TEXT                  nullable (redacted)
+  status          TEXT     NOT NULL   DEFAULT 'success'
+                          CHECK (status IN ('success','failed'))
+  error_message   TEXT                  nullable
+  created_at      TIMESTAMPTZ NOT NULL  DEFAULT CURRENT_TIMESTAMP, part of composite PK
+  [hypertable on created_at when TimescaleDB available]
+
+-- Materialized views (refreshed every 5 min by background task)
+daily_review_metrics
+  day               DATE                  NOT NULL
+  total_reviews     INTEGER               NOT NULL
+  total_cost_usd    NUMERIC               NOT NULL
+  avg_cost_per_review_usd NUMERIC          NOT NULL
+  p50_latency_ms    INTEGER               NOT NULL
+  p95_latency_ms    INTEGER               NOT NULL
+  total_accepted    INTEGER               NOT NULL
+  acceptance_rate   REAL                  NOT NULL
+
+phase_daily_metrics
+  day               DATE                  NOT NULL
+  phase             TEXT     NOT NULL   (non-empty span_type)
+  span_count        INTEGER               NOT NULL
+  p50_latency_ms    INTEGER               NOT NULL
+  p95_latency_ms    INTEGER               NOT NULL
+  failures          INTEGER               NOT NULL
+
+-- SQLite (idempotency / review runs)
+webhook_deliveries
+  delivery_id     TEXT    PRIMARY KEY
+  received_at     TEXT    NOT NULL   DEFAULT CURRENT_TIMESTAMP
+
+review_runs
+  repository      TEXT    NOT NULL   part of composite PK
+  pr_number       INTEGER NOT NULL   part of composite PK
+  head_sha        TEXT    NOT NULL   part of composite PK
+  created_at      TEXT    NOT NULL   DEFAULT CURRENT_TIMESTAMP
+  PRIMARY KEY (repository, pr_number, head_sha)
+```
+
+### SQLite (idempotency)
+
+Local SQLite (`data/perchly.sqlite3`) persists two small tables only:
+
+```text
+webhook_deliveries
+  delivery_id     TEXT    PRIMARY KEY
+  received_at     TEXT    NOT NULL   DEFAULT CURRENT_TIMESTAMP
+
+review_runs
+  repository      TEXT    NOT NULL   part of composite PK
+  pr_number       INTEGER NOT NULL   part of composite PK
+  head_sha        TEXT    NOT NULL   part of composite PK
+  created_at      TEXT    NOT NULL   DEFAULT CURRENT_TIMESTAMP
+  PRIMARY KEY (repository, pr_number, head_sha)
+```
+
+### Table initialization
+
+All base tables are created **idempotently at service startup** via `initialize_schema()` calls in:
+
+- `server/app/services/tenant_store.py` — users, workspaces, workspace_members, github_installations, auth_sessions
+- `server/app/services/review_queue.py` — review_queue, review_outcomes, review_decisions, fix_prs, outcome_examples
+- `server/app/services/retrieval.py` — repositories, code_chunks, embeddings, review_context
+- `server/app/services/telemetry.py` — agent_spans hypertable, daily_review_metrics, phase_daily_metrics views (optional TimescaleDB)
+
+No versioned migration system (Alembic/Prisma) is used — tables are created via `CREATE TABLE IF NOT EXISTS` on first connection. See the [ADR on schema initialization](server/docs/adr/0002-phase-1-checkpoint.md) for design rationale.
 
 ---
 
@@ -455,11 +609,16 @@ daily_review_metrics (day, total_reviews, total_cost_usd, avg_cost_per_review_us
 | ------ | ----------------------------- | ------------------------------------- | ------------------------ |
 | `GET`  | `/reviews/queue`              | —                                     | List pending queue items |
 | `GET`  | `/reviews/queue/{id}`         | —                                     | Get one queue item       |
-| `POST` | `/reviews/queue/{id}/approve` | `{reviewer, comment?}`                | Approve and post         |
-| `POST` | `/reviews/queue/{id}/reject`  | `{reviewer, comment?}`                | Reject without posting   |
-| `POST` | `/reviews/queue/{id}/edit`    | `{reviewer, comment?, edited_review}` | Post edited version      |
-| `POST` | `/reviews/queue/{id}/findings/{finding_id}/fix-pr/preview` | `{reviewer}` | Generate and persist a fix diff |
-| `POST` | `/reviews/fix-pr/{fix_id}/create` | `{reviewer}` | Confirm preview and open/reuse a GitHub PR |
+| `POST` | `/reviews/queue/{id}/approve` | `{comment?}`                | Approve and post; reviewer comes from signed-in GitHub identity |
+| `POST` | `/reviews/queue/{id}/reject`  | `{comment?}`                | Reject without posting |
+| `POST` | `/reviews/queue/{id}/edit`    | `{comment?, edited_review}` | Post edited version |
+| `POST` | `/reviews/queue/{id}/findings/{finding_id}/fix-pr/preview` | `{}` | Generate and persist a fix diff |
+| `POST` | `/reviews/fix-pr/{fix_id}/create` | `{}` | Confirm preview and open/reuse a GitHub PR |
+
+Review and observability APIs require the `perchly_session` cookie. Sign in
+through `GET /auth/github`; `GET /auth/me` returns the current user and
+`POST /auth/logout` clears the session. The GitHub App setup callback is
+`GET /auth/github/installation`.
 
 ### Observability _(requires a signed-in GitHub session)_
 
@@ -484,6 +643,11 @@ daily_review_metrics (day, total_reviews, total_cost_usd, avg_cost_per_review_us
 | `GITHUB_APP_ID`                        | ✅       | —                    | GitHub App numeric ID                                             |
 | `GITHUB_WEBHOOK_SECRET`                | ✅       | —                    | Shared webhook HMAC secret                                        |
 | `GITHUB_PRIVATE_KEY_PATH`              | ✅       | —                    | Path to the `.pem` private key file                               |
+| `GITHUB_OAUTH_CLIENT_ID`                | ✅       | —                    | GitHub OAuth client ID for console sign-in                        |
+| `GITHUB_OAUTH_CLIENT_SECRET`            | ✅       | —                    | GitHub OAuth client secret                                        |
+| `GITHUB_OAUTH_REDIRECT_URI`             | —        | `http://localhost:8000/auth/github/callback` | OAuth callback URL |
+| `WEB_APP_URL`                           | —        | `http://localhost:5173` | Console URL after sign-in |
+| `SESSION_SECRET`                        | ✅       | —                    | At least 32 characters; signs the HTTP-only session cookie        |
 | `GEMINI_API_KEY`                       | ✅       | —                    | Google Gemini API key                                             |
 | `DATABASE_URL`                         | ✅       | —                    | PostgreSQL connection string (`postgresql://...?sslmode=require`) |
 | `TEMPORAL_ADDRESS`                     | ✅       | `localhost:7233`     | Temporal server gRPC address                                      |
@@ -535,8 +699,8 @@ uv run python -m app.temporal.worker
 
 ```bash
 cd web
-npm install
-npm run dev   # starts on :5173, proxies /reviews and /observability to :8000
+bun install
+bun run dev   # starts on :5173; Vite proxies API routes to :8000
 ```
 
 ### Tests
@@ -648,7 +812,7 @@ Perchly already needs PostgreSQL for the HITL queue and spans. Adding pgvector a
 
 ### Why the simple-query protocol for database writes?
 
-Neon's transaction-mode connection pooler routes pg8000's extended-protocol `Parse`/`Bind`/`Execute` messages to different backends, causing `SQLSTATE 26000` ("unnamed prepared statement does not exist"). Perchly inlines all parameter values as SQL literals using `_sql_literal()` and sends a single `Query` message. With `standard_conforming_strings = on` (PostgreSQL default since 9.1), only single-quote doubling is required — no backslash escaping.
+Some transaction-mode PostgreSQL poolers route pg8000's extended-protocol `Parse`/`Bind`/`Execute` messages to different backends, causing `SQLSTATE 26000` ("unnamed prepared statement does not exist"). Perchly uses PostgreSQL's simple-query protocol for these connections. SQL values are safely encoded by `_sql_literal()`; this avoids relying on a prepared statement staying on one pooled backend.
 
 ### Why Gemini instead of Claude or OpenAI?
 
@@ -670,7 +834,7 @@ Agent-authored fix PRs (Phase 5) always target a human review step before merge.
 | **Phase 3** | ✅ Done        | HITL queue, approval UI, decision persistence                                                                                                                                                                               |
 | **Phase 4** | ✅ Done        | OTel spans, Timescale aggregates, observability dashboard                                                                                                                                                                   |
 | **Phase 5** | ✅ Done        | **Agent-authored fix PRs** — structured patch preview, confirmation, idempotent branch/PR creation, persistence, and generated-PR webhook loop prevention |
-| **Phase 6** | ⬜ Planned     | **Learning loop improvements** — outcome-weighted retrieval, confidence calibration tuning                                                                                                                                  |
+| **Phase 6** | ✅ Done        | **Learning loop baseline** — finding outcome storage, similar-outcome retrieval, and golden evaluation cases                                                                                                               |
 | **Phase 7** | 🔄 In progress | **Docs & setup polish** — this README, setup scripts, cleaner install for new machines                                                                                                                                      |
 
 ---
