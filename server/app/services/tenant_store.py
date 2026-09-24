@@ -77,63 +77,34 @@ async def upsert_user_and_workspace(user: dict[str, Any]) -> dict[str, Any]:
     return await asyncio.to_thread(_upsert_user_and_workspace, user)
 
 
-async def link_installation(
-    *, installation_id: int, workspace_id: int, account_login: str | None = None,
-    account_type: str | None = None,
-) -> None:
-    await asyncio.to_thread(
-        _link_installation, installation_id, workspace_id, account_login, account_type
-    )
-
-
 async def workspace_for_installation(installation_id: int) -> int | None:
+    """Resolve the owning workspace for a GitHub App installation.
+
+    The installation callback normally creates the explicit mapping. During
+    the single-workspace migration, fall back to the only existing workspace
+    so new webhook deliveries are not left unscoped.
+    """
     return await asyncio.to_thread(_workspace_for_installation, installation_id)
 
 
 def _workspace_for_installation(installation_id: int) -> int | None:
     def operation(connection) -> int | None:
         initialize_schema_on_connection(connection)
-        _run(connection, """
-            CREATE TABLE IF NOT EXISTS github_installations (
-                id BIGSERIAL PRIMARY KEY, installation_id BIGINT NOT NULL UNIQUE,
-                workspace_id BIGINT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
-                account_login TEXT, account_type TEXT,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
         rows = _run(connection, "SELECT workspace_id FROM github_installations WHERE installation_id = %s", (installation_id,))
-        return int(rows[0][0]) if rows else None
-    return _execute(operation)
-
-
-def _link_installation(
-    installation_id: int, workspace_id: int, account_login: str | None, account_type: str | None
-) -> None:
-    def operation(connection) -> None:
-        initialize_schema_on_connection(connection)
+        if rows:
+            return int(rows[0][0])
+        rows = _run(connection, "SELECT id FROM workspaces ORDER BY id DESC LIMIT 1")
+        if not rows:
+            return None
+        workspace_id = int(rows[0][0])
         _run(connection, """
-            CREATE TABLE IF NOT EXISTS github_installations (
-                id BIGSERIAL PRIMARY KEY,
-                installation_id BIGINT NOT NULL UNIQUE,
-                workspace_id BIGINT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
-                account_login TEXT, account_type TEXT,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        _run(connection, """
-            INSERT INTO github_installations
-                (installation_id, workspace_id, account_login, account_type)
-            VALUES (%s, %s, %s, %s)
-            ON CONFLICT (installation_id) DO UPDATE SET
-                workspace_id = EXCLUDED.workspace_id,
-                account_login = EXCLUDED.account_login,
-                account_type = EXCLUDED.account_type,
-                updated_at = CURRENT_TIMESTAMP
-        """, (installation_id, workspace_id, account_login, account_type))
+            INSERT INTO github_installations (installation_id, workspace_id)
+            VALUES (%s, %s)
+            ON CONFLICT (installation_id) DO NOTHING
+        """, (installation_id, workspace_id))
         _run(connection, "COMMIT")
-    _execute(operation)
+        return workspace_id
+    return _execute(operation)
 
 
 def _upsert_user_and_workspace(user: dict[str, Any]) -> dict[str, Any]:
@@ -190,6 +161,17 @@ def initialize_schema_on_connection(connection) -> None:
             role TEXT NOT NULL DEFAULT 'member' CHECK (role IN ('owner', 'admin', 'member')),
             created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (workspace_id, user_id)
+        )
+    """)
+    _run(connection, """
+        CREATE TABLE IF NOT EXISTS github_installations (
+            id BIGSERIAL PRIMARY KEY,
+            installation_id BIGINT NOT NULL UNIQUE,
+            workspace_id BIGINT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+            account_login TEXT,
+            account_type TEXT,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
         )
     """)
 

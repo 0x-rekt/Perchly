@@ -7,7 +7,6 @@ load_dotenv()
 
 GITHUB_WEBHOOK_SECRET = os.getenv("GITHUB_WEBHOOK_SECRET")
 GITHUB_APP_ID = os.getenv("GITHUB_APP_ID")
-GITHUB_APP_SLUG = os.getenv("GITHUB_APP_SLUG")
 GITHUB_PRIVATE_KEY_PATH = os.getenv("GITHUB_PRIVATE_KEY_PATH")
 GITHUB_API_URL = "https://api.github.com"
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")

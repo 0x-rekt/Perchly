@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import type { MetricCardProps, RouteKey } from "../../types";
+import type { AuthUser, MetricCardProps, RouteKey } from "../../types";
 import {
   Activity,
   Gauge,
@@ -52,17 +52,21 @@ export function Sidebar({
   queueCount,
   live,
   onNavigate,
+  user,
+  onLogout,
 }: {
   route: RouteKey;
   queueCount: number;
   live: boolean;
   onNavigate: (route: RouteKey) => void;
+  user: AuthUser;
+  onLogout: () => void;
 }) {
   return (
     <aside className="flex flex-col border-r border-line bg-[linear-gradient(180deg,rgba(18,23,21,0.55),transparent_45%)] px-3.5 pt-5 pb-[18px] max-[900px]:hidden">
       <div className="grid gap-[5px] px-2.5 pt-1.5 pb-[26px]">
         <Brand />
-        <span className="pl-[39px] text-[10px] text-faint">acme / platform</span>
+        <span className="pl-[39px] text-[10px] text-faint">single workspace</span>
       </div>
       <nav className="grid gap-6" aria-label="Primary navigation">
         {NAV.map((group) => (
@@ -98,12 +102,10 @@ export function Sidebar({
         ))}
       </nav>
       <div className="mt-auto flex items-center gap-2.5 border-t border-line px-2.5 pt-4 pb-0.5">
-        <div className="grid size-[30px] place-items-center rounded-full bg-[#394d43] text-[11px] font-extrabold text-lime">
-          K
-        </div>
+        {user.avatar_url ? <img src={user.avatar_url} alt="" className="size-[30px] rounded-full" /> : <div className="grid size-[30px] place-items-center rounded-full bg-[#394d43] text-[11px] font-extrabold text-lime">{user.login.slice(0, 1).toUpperCase()}</div>}
         <div className="grid gap-0.5">
-          <strong className="text-[12.5px] font-bold">Kolay</strong>
-          <span className="text-[10px] text-faint">Maintainer</span>
+          <strong className="max-w-[100px] truncate text-[12.5px] font-bold">{user.name}</strong>
+          <span className="text-[10px] text-faint">@{user.login}</span>
         </div>
         <span
           className={
@@ -112,6 +114,7 @@ export function Sidebar({
               : "ml-auto size-[7px] rounded-full bg-red"
           }
         />
+        <button type="button" onClick={onLogout} className="ml-1 text-[10px] text-faint transition hover:text-red focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-lime" aria-label="Sign out">SIGN OUT</button>
       </div>
     </aside>
   );
@@ -122,11 +125,15 @@ export function Header({
   live,
   label,
   onRefresh,
+  user,
+  onLogout,
 }: {
   refreshing: boolean;
   live: boolean;
   label: string;
   onRefresh: () => void;
+  user: AuthUser;
+  onLogout: () => void;
 }) {
   return (
     <header className="sticky top-0 z-[5] flex h-16 items-center gap-3.5 border-b border-line bg-canvas/80 px-7 backdrop-blur-[14px] max-[900px]:px-[18px]">
@@ -161,13 +168,13 @@ export function Header({
         >
           <RefreshCw size={17} className={refreshing ? "animate-spin" : ""} />
         </button>
-        <div className="grid size-[30px] place-items-center rounded-full bg-[#394d43] text-[11px] font-extrabold text-lime">
-          K
-        </div>
+        {user.avatar_url ? <img src={user.avatar_url} alt={`${user.name} avatar`} className="size-[30px] rounded-full" /> : <div className="grid size-[30px] place-items-center rounded-full bg-[#394d43] text-[11px] font-extrabold text-lime">{user.login.slice(0, 1).toUpperCase()}</div>}
+        <button type="button" onClick={onLogout} className="font-mono text-[10px] uppercase tracking-[0.08em] text-faint transition hover:text-red focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-lime">Sign out</button>
       </div>
     </header>
   );
 }
+
 
 export function PageHeading({
   title,

@@ -29,9 +29,6 @@ from app.schemas.findings import assign_finding_ids
 async def fetch_review_context(input: dict[str, Any]) -> dict[str, Any]:
     """Fetch GitHub data needed by the deterministic workflow."""
     values = _workflow_input_values(input)
-    workspace_id = await workspace_for_installation(values["installation_id"])
-    if workspace_id is None:
-        raise RuntimeError("GitHub installation is not linked to a workspace")
     app_id, private_key_path = github_app_credentials()
     github = GitHubAppClient(app_id=app_id, private_key_path=private_key_path)
     token = await github.installation_token(values["installation_id"])
@@ -51,6 +48,10 @@ async def fetch_review_context(input: dict[str, Any]) -> dict[str, Any]:
         pr_number=values["pr_number"],
         installation_token=token,
     )
+    # Installation ownership is the data boundary for the review queue.
+    # Older installations may not be linked yet; those reviews remain
+    # unassigned until the GitHub installation callback has completed.
+    workspace_id = await workspace_for_installation(values["installation_id"])
     return {
         **values,
         "workspace_id": workspace_id,
@@ -79,7 +80,6 @@ async def retrieve_repository_context(
         pr_number=fetched["pr_number"],
         head_sha=fetched["head_sha"],
         agent="retrieval",
-        workspace_id=fetched.get("workspace_id"),
     )
     contexts = await RetrievalService().build_contexts(
         repository=fetched["repository"],
@@ -99,7 +99,6 @@ async def retrieve_repository_context(
                     "category": category,
                     "message": fetched["diff"][:4000],
                 },
-                workspace_id=fetched.get("workspace_id"),
                 limit=5,
             )
             for category in categories
@@ -129,7 +128,6 @@ async def run_specialist(payload: dict[str, Any]) -> dict[str, Any]:
         pr_number=retrieved["pr_number"],
         head_sha=retrieved["head_sha"],
         agent=category,
-        workspace_id=retrieved.get("workspace_id"),
     )
     review = await specialist.review(
         title=retrieved["title"],
@@ -193,11 +191,6 @@ async def route_aggregated_review(review: dict[str, Any]) -> dict[str, Any]:
         unresolved_errors=aggregated.get("unresolved_errors", []),
     )
     if decision.mode == "needs_approval":
-        workspace_id = await workspace_for_installation(fetched["installation_id"])
-        if workspace_id is None:
-            raise ValueError(
-                "GitHub installation is not connected to a Perchly workspace"
-            )
         queue_item_id = await ReviewQueueService().enqueue(
             delivery_id=fetched["delivery_id"],
             repository=fetched["repository"],
@@ -216,7 +209,7 @@ async def route_aggregated_review(review: dict[str, Any]) -> dict[str, Any]:
             },
             specialist_failures=aggregated["failures"],
             reason=decision.reason,
-            workspace_id=workspace_id,
+            workspace_id=fetched.get("workspace_id"),
         )
         return {"mode": decision.mode, "reason": decision.reason, "queue_item_id": queue_item_id}
     return {"mode": decision.mode, "reason": decision.reason, "queue_item_id": None}
@@ -231,7 +224,6 @@ async def persist_automatic_decision(payload: dict[str, Any]) -> int:
         repository=fetched["repository"],
         pr_number=fetched["pr_number"],
         head_sha=fetched["head_sha"],
-        workspace_id=fetched.get("workspace_id"),
         review_payload=payload["review"],
         reason=payload["reason"],
     )

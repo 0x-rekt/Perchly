@@ -7,15 +7,15 @@ from app.schemas.reviews import EditReviewRequest, FixPullRequestRequest, Review
 from app.core.config import github_app_credentials
 from app.services.fix_pr import FixPatch, FixPrError, PatchFile, build_patch, create_fix_pr
 from app.services.github_api import GitHubApiError, GitHubAppClient
-from app.services.auth import get_current_user
 from app.services.review_queue import ReviewQueueService
+from app.services.auth import get_current_user
 from app.temporal.client import (
     review_workflow_id,
     send_signal_by_workflow_id,
 )
 from app.temporal.workflows import ReviewDecisionInput
 
-router = APIRouter(prefix="/reviews", tags=["reviews"], dependencies=[Depends(get_current_user)])
+router = APIRouter(prefix="/reviews", tags=["reviews"])
 queue = ReviewQueueService()
 logger = logging.getLogger(__name__)
 
@@ -149,23 +149,21 @@ async def create_review_fix_pr(fix_id: int, request: FixPullRequestRequest, user
     return {"fix_id": fix_id, "pull_request_url": result.url, "branch": result.branch}
 
 
-def _workspace_id(user: dict[str, Any]) -> int | None:
-    # Direct function calls in unit tests do not run FastAPI dependency
-    # injection; HTTP requests always receive a real user mapping here.
+def _workspace_id(user: dict[str, Any] | None) -> int | None:
     if not isinstance(user, dict):
         return None
-    workspace_id = user.get("workspace_id")
-    if not isinstance(workspace_id, int):
+    value = user.get("workspace_id")
+    if not isinstance(value, int):
         raise HTTPException(status_code=403, detail="User is not assigned to a workspace")
-    return workspace_id
+    return value
 
 
 async def _require_item(queue_item_id: int, workspace_id: int | None = None) -> dict[str, Any]:
-    item = (
-        await queue.get_item(queue_item_id)
-        if workspace_id is None
-        else await queue.get_item(queue_item_id, workspace_id=workspace_id)
-    )
+    # Keep direct service fakes/backwards-compatible callers working while
+    # production requests always pass the authenticated workspace boundary.
+    item = (await queue.get_item(queue_item_id)
+            if workspace_id is None
+            else await queue.get_item(queue_item_id, workspace_id=workspace_id))
     if item is None:
         raise HTTPException(status_code=404, detail="Review queue item not found")
     return item

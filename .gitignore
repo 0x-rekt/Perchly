@@ -1,3 +1,10 @@
+.agent
+.agents
+.codex
+.gemini
+.opencode
+.impeccable
+
 .env
 *.md
 !README.md

@@ -4,6 +4,7 @@ import type {
   ReviewItem,
   TraceDetail,
   TracesResponse,
+  AuthUser,
 } from "../types";
 
 const API = import.meta.env.VITE_API_URL ?? "";
@@ -34,8 +35,19 @@ async function request<T>(
     } | null;
     throw new Error(payload?.detail ?? `Request failed (${response.status})`);
   }
+  if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
 }
+
+export function getCurrentUser(): Promise<AuthUser> {
+  return request<AuthUser>("/auth/me");
+}
+
+export function logout(): Promise<void> {
+  return request<void>("/auth/logout", { method: "POST" });
+}
+
+
 
 export function getQueue(): Promise<ReviewItem[]> {
   return request<ReviewItem[]>("/reviews/queue");
