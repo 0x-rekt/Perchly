@@ -8,7 +8,12 @@ import {
   StatusPill,
 } from "../ui/DashboardChrome";
 import { getOverview } from "../../lib/api";
-import { GitPullRequest, CircleDollarSign, Inbox, TrendingUp } from "../../lib/icons";
+import {
+  GitPullRequest,
+  CircleDollarSign,
+  Inbox,
+  TrendingUp,
+} from "../../lib/icons";
 import {
   formatAgeMinutes,
   formatDay,
@@ -23,7 +28,8 @@ const TH =
   "border-y border-line bg-canvas/40 px-[18px] py-2.5 text-left font-mono text-[10px] font-medium uppercase tracking-[0.08em] text-faint whitespace-nowrap";
 const TH_NUM =
   "border-y border-line bg-canvas/40 px-[18px] py-2.5 text-right font-mono text-[10px] font-medium uppercase tracking-[0.08em] text-faint whitespace-nowrap tabular-nums";
-const TD = "border-b border-line px-[18px] py-3 text-[12.5px] text-ink whitespace-nowrap";
+const TD =
+  "border-b border-line px-[18px] py-3 text-[12.5px] text-ink whitespace-nowrap";
 const TD_NUM =
   "border-b border-line px-[18px] py-3 text-right font-mono text-[12px] text-ink whitespace-nowrap tabular-nums";
 
@@ -39,7 +45,8 @@ export function Overview({
   }, [error, onLiveChange]);
 
   const hasFailures =
-    (data?.latency_by_phase.reduce((sum, row) => sum + row.failures, 0) ?? 0) > 0;
+    (data?.latency_by_phase.reduce((sum, row) => sum + row.failures, 0) ?? 0) >
+    0;
   const aside =
     error !== null ? (
       <StatusPill tone="error">Connection failed</StatusPill>
@@ -204,7 +211,9 @@ function PanelError({ message }: { message: string }) {
       className="grid justify-items-center gap-[5px] rounded-lg border border-line bg-panel p-[26px] text-center"
       role="alert"
     >
-      <p className="m-0 text-[14px] font-bold text-red">Unable to load the overview.</p>
+      <p className="m-0 text-[14px] font-bold text-red">
+        Unable to load the overview.
+      </p>
       <span className="text-[12.5px] text-muted">{message}</span>
     </div>
   );
@@ -231,7 +240,10 @@ function VolumeChart({ points }: { points: ReviewsPerDay[] }) {
       >
         <title>Reviews per day</title>
         {points.map((point, index) => {
-          const barHeight = Math.max(2, (point.reviews / max) * (height - top - bottom));
+          const barHeight = Math.max(
+            2,
+            (point.reviews / max) * (height - top - bottom),
+          );
           const x = index * slot + (slot - barWidth) / 2;
           const y = height - bottom - barHeight;
           const label = index % labelEvery === 0 || index === n - 1;
@@ -280,7 +292,11 @@ function VolumeChart({ points }: { points: ReviewsPerDay[] }) {
 
 function LatencyTable({ rows }: { rows: OverviewMetrics["latency_by_phase"] }) {
   if (rows.length === 0) {
-    return <p className="m-0 p-6 text-center text-[12.5px] leading-[1.6] text-faint">No phase spans recorded in this window.</p>;
+    return (
+      <p className="m-0 p-6 text-center text-[12.5px] leading-[1.6] text-faint">
+        No phase spans recorded in this window.
+      </p>
+    );
   }
   return (
     <div className="overflow-x-auto">
@@ -297,7 +313,9 @@ function LatencyTable({ rows }: { rows: OverviewMetrics["latency_by_phase"] }) {
         <tbody>
           {rows.map((row) => (
             <tr key={row.phase} className="transition hover:bg-panel-2/55">
-              <td className={`${TD} font-mono text-[11.5px] text-cyan`}>{row.phase}</td>
+              <td className={`${TD} font-mono text-[11.5px] text-cyan`}>
+                {row.phase}
+              </td>
               <td className={TD_NUM}>{row.spans}</td>
               <td className={TD_NUM}>{row.p50_ms.toLocaleString()}ms</td>
               <td className={TD_NUM}>{row.p95_ms.toLocaleString()}ms</td>
@@ -322,14 +340,23 @@ function AcceptanceTable({
   rows: OverviewMetrics["acceptance_rate_by_category"];
 }) {
   if (rows.length === 0) {
-    return <p className="m-0 p-6 text-center text-[12.5px] leading-[1.6] text-faint">No review decisions recorded yet.</p>;
+    return (
+      <p className="m-0 p-6 text-center text-[12.5px] leading-[1.6] text-faint">
+        No review decisions recorded yet.
+      </p>
+    );
   }
   return (
     <div className="grid gap-1 px-[18px] pt-3 pb-[18px]">
       {rows.map((row) => (
-        <div key={row.category} className="grid gap-[7px] border-b border-line/60 py-[11px] last:border-b-0">
+        <div
+          key={row.category}
+          className="grid gap-[7px] border-b border-line/60 py-[11px] last:border-b-0"
+        >
           <div className="flex items-baseline justify-between gap-2.5">
-            <span className="font-mono tabular-nums text-ink">{titleCase(row.category)}</span>
+            <span className="font-mono tabular-nums text-ink">
+              {titleCase(row.category)}
+            </span>
             <span className="font-mono text-[10.5px] tabular-nums text-faint">
               {row.accepted}/{row.total} · {formatPercent(row.acceptance_rate)}
             </span>
@@ -355,7 +382,11 @@ function LearningOutcomeTable({
   rows: OverviewMetrics["learning_outcomes"];
 }) {
   if (rows.length === 0) {
-    return <p className="m-0 p-6 text-center text-[12.5px] leading-[1.6] text-faint">No learning outcomes recorded yet.</p>;
+    return (
+      <p className="m-0 p-6 text-center text-[12.5px] leading-[1.6] text-faint">
+        No learning outcomes recorded yet.
+      </p>
+    );
   }
   return (
     <div className="overflow-x-auto">
@@ -369,7 +400,9 @@ function LearningOutcomeTable({
         <tbody>
           {rows.map((row) => (
             <tr key={row.outcome} className="transition hover:bg-panel-2/55">
-              <td className={`${TD} font-mono text-[11.5px] text-cyan`}>{titleCase(row.outcome)}</td>
+              <td className={`${TD} font-mono text-[11.5px] text-cyan`}>
+                {titleCase(row.outcome)}
+              </td>
               <td className={TD_NUM}>{row.count}</td>
             </tr>
           ))}

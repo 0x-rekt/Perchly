@@ -21,7 +21,8 @@ const ACTION_VARIANT: Record<"primary" | "danger" | "secondary", string> = {
   primary:
     "border-lime bg-lime text-[#11170f] shadow-[inset_0_1px_0_rgba(255,255,255,0.25)] hover:bg-[#dbff87]",
   danger: "border-red-line bg-transparent text-red hover:bg-red-soft",
-  secondary: "border-line bg-transparent text-muted hover:border-line-strong hover:text-ink",
+  secondary:
+    "border-line bg-transparent text-muted hover:border-line-strong hover:text-ink",
 };
 
 export function ReviewDetail({
@@ -126,7 +127,9 @@ export function ReviewDetail({
           <h3 className="text-[21px] font-extrabold tracking-[-0.03em] text-ink">
             Pull request #{item.pr_number}
           </h3>
-          <p className="mt-[9px] font-mono text-[10.5px] text-faint">{shaShort(item.head_sha)}</p>
+          <p className="mt-[9px] font-mono text-[10.5px] text-faint">
+            {shaShort(item.head_sha)}
+          </p>
         </div>
         <span className="inline-flex items-center gap-[7px] whitespace-nowrap rounded-md border border-warn-line bg-warn-soft px-[11px] py-[7px] font-mono text-[10.5px] uppercase tracking-[0.05em] text-orange">
           <AlertCircle size={14} /> {titleCase(item.reason)}
@@ -164,7 +167,9 @@ export function ReviewDetail({
             Findings
             <span
               className={`rounded px-1.5 py-0.5 font-mono text-[10px] tabular-nums ${
-                tab === "findings" ? "bg-lime-soft text-lime" : "bg-panel-3 text-faint"
+                tab === "findings"
+                  ? "bg-lime-soft text-lime"
+                  : "bg-panel-3 text-faint"
               }`}
             >
               {review.findings.length}
@@ -190,8 +195,20 @@ export function ReviewDetail({
       <div
         className="px-6 py-5 max-[520px]:px-[18px]"
         role={hasDiff ? "tabpanel" : undefined}
-        id={hasDiff ? (tab === "findings" ? "panel-findings" : "panel-diff") : undefined}
-        aria-labelledby={hasDiff ? (tab === "findings" ? "tab-findings" : "tab-diff") : undefined}
+        id={
+          hasDiff
+            ? tab === "findings"
+              ? "panel-findings"
+              : "panel-diff"
+            : undefined
+        }
+        aria-labelledby={
+          hasDiff
+            ? tab === "findings"
+              ? "tab-findings"
+              : "tab-diff"
+            : undefined
+        }
       >
         {tab === "diff" && hasDiff ? (
           <DiffView diff={diff} markFiles={findingFiles} />
@@ -211,11 +228,15 @@ export function ReviewDetail({
                 }
                 onFix={async () => {
                   if (!reviewer.trim()) {
-                    setError("Enter your name or email before raising a fix PR.");
+                    setError(
+                      "Enter your name or email before raising a fix PR.",
+                    );
                     return;
                   }
                   if (!finding.finding_id) {
-                    setError("This finding has no stable ID and cannot be fixed safely.");
+                    setError(
+                      "This finding has no stable ID and cannot be fixed safely.",
+                    );
                     return;
                   }
                   setError(null);
@@ -234,7 +255,9 @@ export function ReviewDetail({
                     });
                   } catch (err) {
                     setError(
-                      err instanceof Error ? err.message : "Unable to raise a fix PR.",
+                      err instanceof Error
+                        ? err.message
+                        : "Unable to raise a fix PR.",
                     );
                   } finally {
                     setFixing(null);
@@ -278,7 +301,9 @@ export function ReviewDetail({
                 })
                 .catch((err: unknown) =>
                   setError(
-                    err instanceof Error ? err.message : "Unable to create fix PR.",
+                    err instanceof Error
+                      ? err.message
+                      : "Unable to create fix PR.",
                   ),
                 )
                 .finally(() => setFixing(null));
@@ -425,7 +450,10 @@ function FixPreviewDialog({
       >
         <div className="flex items-start justify-between gap-4 border-b border-line px-5 py-4">
           <div className="min-w-0">
-            <h2 id="fix-preview-title" className="text-[15px] font-bold text-ink">
+            <h2
+              id="fix-preview-title"
+              className="text-[15px] font-bold text-ink"
+            >
               Proposed fix
             </h2>
             <p className="mt-1 truncate font-mono text-[11px] text-faint">
@@ -468,7 +496,11 @@ function FixPreviewDialog({
             disabled={busy}
             className="inline-flex min-h-10 items-center gap-2 rounded-md border border-lime bg-lime px-[15px] text-[12.5px] font-bold text-[#11170f] shadow-[inset_0_1px_0_rgba(255,255,255,0.25)] transition hover:bg-[#dbff87] active:translate-y-px disabled:cursor-wait disabled:opacity-55 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-lime"
           >
-            {busy ? <LoaderCircle size={16} className="animate-spin" /> : <Check size={16} />}
+            {busy ? (
+              <LoaderCircle size={16} className="animate-spin" />
+            ) : (
+              <Check size={16} />
+            )}
             {busy ? "Submitting..." : "Confirm and open Fix PR"}
           </button>
           <button
@@ -499,7 +531,9 @@ function Field({
 }) {
   return (
     <label className="grid gap-[7px] text-[12px] text-muted">
-      <span className="text-[11px] font-semibold tracking-[0.02em]">{label}</span>
+      <span className="text-[11px] font-semibold tracking-[0.02em]">
+        {label}
+      </span>
       <input
         value={value}
         onChange={(event) => onChange(event.target.value)}
@@ -545,13 +579,17 @@ function FindingCard({
           {Math.round(finding.confidence * 100)}% confidence
         </span>
       </div>
-      <p className="mt-3 mb-[9px] text-[13px] leading-[1.7] text-ink">{finding.message}</p>
+      <p className="mt-3 mb-[9px] text-[13px] leading-[1.7] text-ink">
+        {finding.message}
+      </p>
       <p className="m-0 inline-flex items-center gap-1.5 font-mono text-[11px] text-cyan">
-        <FileCode2 size={13} /> {finding.file}:{finding.line_start}-{finding.line_end}
+        <FileCode2 size={13} /> {finding.file}:{finding.line_start}-
+        {finding.line_end}
       </p>
       {finding.suggested_fix && (
         <p className="mt-3 rounded-md border border-line bg-panel-3 p-3 text-[12px] leading-[1.6] whitespace-pre-wrap text-muted">
-          <b className="font-bold text-ink">Suggested fix:</b> {finding.suggested_fix}
+          <b className="font-bold text-ink">Suggested fix:</b>{" "}
+          {finding.suggested_fix}
         </p>
       )}
       {finding.suggested_fix && finding.finding_id && (

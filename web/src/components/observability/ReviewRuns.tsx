@@ -15,7 +15,12 @@ import {
   titleCase,
 } from "../../lib/format";
 import { useSurface } from "../../hooks/use-surface";
-import type { Span, TraceDetail, TraceSummary, TracesResponse } from "../../types";
+import type {
+  Span,
+  TraceDetail,
+  TraceSummary,
+  TracesResponse,
+} from "../../types";
 
 const FILTER_INPUT =
   "min-h-8 w-full rounded-md border border-line bg-canvas px-2 py-1.5 text-[12px] text-ink placeholder:text-faint caret-lime outline-none transition focus:border-lime focus:shadow-[0_0_0_3px_rgba(201,243,107,0.12)]";
@@ -92,7 +97,9 @@ export function ReviewRuns({
     error !== null ? (
       <StatusPill tone="error">Connection failed</StatusPill>
     ) : failures > 0 ? (
-      <StatusPill tone="warn">{failures} run{failures === 1 ? "" : "s"} failed</StatusPill>
+      <StatusPill tone="warn">
+        {failures} run{failures === 1 ? "" : "s"} failed
+      </StatusPill>
     ) : (
       <StatusPill tone="ok">{items.length} runs in this window</StatusPill>
     );
@@ -127,7 +134,12 @@ export function ReviewRuns({
               placeholder="owner/repository"
               className={FILTER_INPUT}
               value={draftFilters.repository ?? ""}
-              onChange={(event) => setDraftFilters({ ...draftFilters, repository: event.target.value })}
+              onChange={(event) =>
+                setDraftFilters({
+                  ...draftFilters,
+                  repository: event.target.value,
+                })
+              }
             />
             <input
               aria-label="PR number"
@@ -136,21 +148,35 @@ export function ReviewRuns({
               min="1"
               className={FILTER_INPUT}
               value={draftFilters.prNumber ?? ""}
-              onChange={(event) => setDraftFilters({ ...draftFilters, prNumber: event.target.value ? Number(event.target.value) : undefined })}
+              onChange={(event) =>
+                setDraftFilters({
+                  ...draftFilters,
+                  prNumber: event.target.value
+                    ? Number(event.target.value)
+                    : undefined,
+                })
+              }
             />
             <input
               aria-label="Agent"
               placeholder="agent (security)"
               className={FILTER_INPUT}
               value={draftFilters.agent ?? ""}
-              onChange={(event) => setDraftFilters({ ...draftFilters, agent: event.target.value })}
+              onChange={(event) =>
+                setDraftFilters({ ...draftFilters, agent: event.target.value })
+              }
             />
             <input
               aria-label="Head SHA"
               placeholder="head SHA"
               className={FILTER_INPUT}
               value={draftFilters.headSha ?? ""}
-              onChange={(event) => setDraftFilters({ ...draftFilters, headSha: event.target.value })}
+              onChange={(event) =>
+                setDraftFilters({
+                  ...draftFilters,
+                  headSha: event.target.value,
+                })
+              }
             />
             <div className="grid grid-cols-2 gap-2">
               <button
@@ -200,7 +226,9 @@ export function ReviewRuns({
               className="grid justify-items-center gap-[5px] rounded-lg border border-line bg-panel p-[26px] text-center"
               role="alert"
             >
-              <p className="m-0 text-[14px] font-bold text-red">Unable to load this run.</p>
+              <p className="m-0 text-[14px] font-bold text-red">
+                Unable to load this run.
+              </p>
               <span className="text-[12.5px] text-muted">{showingError}</span>
             </div>
           ) : error && !data ? (
@@ -208,7 +236,9 @@ export function ReviewRuns({
               className="grid justify-items-center gap-[5px] rounded-lg border border-line bg-panel p-[26px] text-center"
               role="alert"
             >
-              <p className="m-0 text-[14px] font-bold text-red">Unable to load review runs.</p>
+              <p className="m-0 text-[14px] font-bold text-red">
+                Unable to load review runs.
+              </p>
               <span className="text-[12.5px] text-muted">{error}</span>
             </div>
           ) : showing ? (
@@ -261,8 +291,12 @@ function RunRow({
           {run.repository.slice(0, 1).toUpperCase()}
         </span>
         <div className="grid min-w-0 gap-0.5">
-          <p className="truncate text-[12px] font-semibold text-ink">{run.repository}</p>
-          <span className="font-mono text-[10px] text-faint">PR #{run.pr_number}</span>
+          <p className="truncate text-[12px] font-semibold text-ink">
+            {run.repository}
+          </p>
+          <span className="font-mono text-[10px] text-faint">
+            PR #{run.pr_number}
+          </span>
         </div>
         <span
           className={
@@ -277,13 +311,17 @@ function RunRow({
         <span>{run.span_count} spans</span>
         <span>{formatMoney(run.total_cost_usd)}</span>
       </div>
-      <div className="font-mono text-[10px] text-faint">{formatDateTime(run.completed_at)}</div>
+      <div className="font-mono text-[10px] text-faint">
+        {formatDateTime(run.completed_at)}
+      </div>
     </button>
   );
 }
 
 function TraceDetailPanel({ trace }: { trace: TraceDetail }) {
-  const models = [...new Set(trace.spans.map((span) => span.model).filter(Boolean))];
+  const models = [
+    ...new Set(trace.spans.map((span) => span.model).filter(Boolean)),
+  ];
   return (
     <section
       className="min-w-0 overflow-hidden rounded-lg border border-line bg-panel"
@@ -307,12 +345,19 @@ function TraceDetailPanel({ trace }: { trace: TraceDetail }) {
       </div>
       <div className="grid grid-cols-[repeat(auto-fit,minmax(130px,1fr))] gap-2.5 border-b border-line px-6 py-4 max-[520px]:px-[18px]">
         <SummaryCell label="Started" value={formatDateTime(trace.started_at)} />
-        <SummaryCell label="Duration" value={formatDuration(trace.duration_seconds)} />
+        <SummaryCell
+          label="Duration"
+          value={formatDuration(trace.duration_seconds)}
+        />
         <SummaryCell label="Cost" value={formatMoney(trace.total_cost_usd)} />
         <SummaryCell label="Spans" value={trace.span_count.toString()} />
         <SummaryCell label="Models" value={models.join(", ") || "—"} />
       </div>
-      <PanelHeading title="Span timeline" meta="Ordered end to end" className="border-t-0 pt-3" />
+      <PanelHeading
+        title="Span timeline"
+        meta="Ordered end to end"
+        className="border-t-0 pt-3"
+      />
       <div className="grid gap-2 px-6 pt-0 pb-6 max-[520px]:px-[18px]">
         {trace.spans.map((span) => (
           <SpanRow span={span} key={span.id} />
@@ -328,7 +373,9 @@ function SummaryCell({ label, value }: { label: string; value: string }) {
       <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-faint">
         {label}
       </span>
-      <strong className="truncate text-[13.5px] font-bold tabular-nums text-ink">{value}</strong>
+      <strong className="truncate text-[13.5px] font-bold tabular-nums text-ink">
+        {value}
+      </strong>
     </div>
   );
 }
@@ -348,9 +395,13 @@ function SpanRow({ span }: { span: Span }) {
         />
         <span className="font-bold text-ink">{titleCase(span.agent)}</span>
         <span className="font-mono text-[10.5px] text-faint">{span.phase}</span>
-        <span className="font-mono text-[10.5px] text-faint">{span.span_type}</span>
+        <span className="font-mono text-[10.5px] text-faint">
+          {span.span_type}
+        </span>
         {span.model && (
-          <span className="font-mono text-[10.5px] text-faint">{span.model}</span>
+          <span className="font-mono text-[10.5px] text-faint">
+            {span.model}
+          </span>
         )}
         <span className="ml-auto font-mono text-[10.5px] tabular-nums text-faint">
           {formatMoney(span.cost_usd)}

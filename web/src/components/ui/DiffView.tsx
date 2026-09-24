@@ -32,8 +32,15 @@ type SplitRow =
 
 const stripPath = (value: string) => value.replace(/^[ab]\//, "");
 
-function applyPaths(file: DiffFile, oldPath: string, newPath: string, index: number) {
-  const shown = stripPath(newPath && newPath !== "/dev/null" ? newPath : oldPath);
+function applyPaths(
+  file: DiffFile,
+  oldPath: string,
+  newPath: string,
+  index: number,
+) {
+  const shown = stripPath(
+    newPath && newPath !== "/dev/null" ? newPath : oldPath,
+  );
   const slash = shown.lastIndexOf("/");
   file.path = shown;
   file.dir = slash >= 0 ? shown.slice(0, slash + 1) : "";
@@ -84,14 +91,24 @@ function parseDiff(diff: string): DiffFile[] {
     if (hunk && file && (oldLeft > 0 || newLeft > 0)) {
       const marker = line[0];
       if (marker === "+") {
-        hunk.rows.push({ kind: "add", oldNo: null, newNo, text: line.slice(1) });
+        hunk.rows.push({
+          kind: "add",
+          oldNo: null,
+          newNo,
+          text: line.slice(1),
+        });
         newNo += 1;
         newLeft -= 1;
         file.additions += 1;
         continue;
       }
       if (marker === "-") {
-        hunk.rows.push({ kind: "del", oldNo, newNo: null, text: line.slice(1) });
+        hunk.rows.push({
+          kind: "del",
+          oldNo,
+          newNo: null,
+          text: line.slice(1),
+        });
         oldNo += 1;
         oldLeft -= 1;
         file.deletions += 1;
@@ -141,12 +158,17 @@ function parseDiff(diff: string): DiffFile[] {
       sawHeader = true;
       continue;
     }
-    if (line.startsWith("Binary files ") || line.startsWith("GIT binary patch")) {
+    if (
+      line.startsWith("Binary files ") ||
+      line.startsWith("GIT binary patch")
+    ) {
       if (file) file.binary = true;
       hunk = null;
       continue;
     }
-    const header = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$/.exec(line);
+    const header = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$/.exec(
+      line,
+    );
     if (header) {
       if (!file) {
         file = createFile("", "");
@@ -192,14 +214,22 @@ function toSplitRows(rows: DiffRow[]): SplitRow[] {
     }
     const dels: DiffRow[] = [];
     const adds: DiffRow[] = [];
-    while (index < rows.length && rows[index].kind !== "context" && rows[index].kind !== "meta") {
+    while (
+      index < rows.length &&
+      rows[index].kind !== "context" &&
+      rows[index].kind !== "meta"
+    ) {
       if (rows[index].kind === "del") dels.push(rows[index]);
       else adds.push(rows[index]);
       index += 1;
     }
     const length = Math.max(dels.length, adds.length);
     for (let offset = 0; offset < length; offset += 1) {
-      paired.push({ kind: "pair", left: dels[offset] ?? null, right: adds[offset] ?? null });
+      paired.push({
+        kind: "pair",
+        left: dels[offset] ?? null,
+        right: adds[offset] ?? null,
+      });
     }
   }
   return paired;
@@ -238,7 +268,9 @@ function UnifiedRow({ row }: { row: DiffRow }) {
   return (
     <div
       className={`group/row flex w-max min-w-full ${
-        added ? "bg-add-bg hover:bg-add-bg-hover" : "bg-del-bg hover:bg-del-bg-hover"
+        added
+          ? "bg-add-bg hover:bg-add-bg-hover"
+          : "bg-del-bg hover:bg-del-bg-hover"
       }`}
     >
       <div
@@ -248,8 +280,12 @@ function UnifiedRow({ row }: { row: DiffRow }) {
             : "bg-del-bg group-hover/row:bg-del-bg-hover"
         }`}
       >
-        <span className={`${GUTTER} text-muted`}>{added ? null : row.oldNo}</span>
-        <span className={`${GUTTER} text-muted`}>{added ? row.newNo : null}</span>
+        <span className={`${GUTTER} text-muted`}>
+          {added ? null : row.oldNo}
+        </span>
+        <span className={`${GUTTER} text-muted`}>
+          {added ? row.newNo : null}
+        </span>
         <span
           className={`w-5 shrink-0 text-center font-mono text-[12px] leading-5 ${
             added ? "text-add" : "text-del"
@@ -266,7 +302,13 @@ function UnifiedRow({ row }: { row: DiffRow }) {
   );
 }
 
-function SplitSide({ row, side }: { row: DiffRow | null; side: "left" | "right" }) {
+function SplitSide({
+  row,
+  side,
+}: {
+  row: DiffRow | null;
+  side: "left" | "right";
+}) {
   const border = side === "left" ? "border-r border-line" : "";
   if (!row) {
     return <div className={`min-h-5 ${border}`} />;
@@ -274,7 +316,9 @@ function SplitSide({ row, side }: { row: DiffRow | null; side: "left" | "right" 
   if (row.kind === "meta") {
     return (
       <div className={`${border} bg-canvas px-3 py-0.5`}>
-        <span className="font-mono text-[11px] leading-5 text-faint italic">{row.text}</span>
+        <span className="font-mono text-[11px] leading-5 text-faint italic">
+          {row.text}
+        </span>
       </div>
     );
   }
@@ -287,7 +331,9 @@ function SplitSide({ row, side }: { row: DiffRow | null; side: "left" | "right" 
   const numberColor = row.kind === "context" ? "text-faint" : "text-muted";
   return (
     <div className={`flex ${tint} ${border}`}>
-      <span className={`${GUTTER} ${numberColor}`}>{side === "left" ? row.oldNo : row.newNo}</span>
+      <span className={`${GUTTER} ${numberColor}`}>
+        {side === "left" ? row.oldNo : row.newNo}
+      </span>
       <code className="whitespace-pre px-3 font-mono text-[12px] leading-5 text-ink [tab-size:4]">
         {row.text}
       </code>
@@ -342,13 +388,19 @@ function FileCard({
           type="button"
           onClick={onToggle}
           aria-expanded={!collapsed}
-          aria-label={collapsed ? `Expand ${file.path}` : `Collapse ${file.path}`}
+          aria-label={
+            collapsed ? `Expand ${file.path}` : `Collapse ${file.path}`
+          }
           title={collapsed ? "Expand file" : "Collapse file"}
           className="grid size-6 shrink-0 place-items-center rounded text-faint transition hover:bg-panel-3 hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-lime"
         >
           <ChevronDown
             size={14}
-            className={collapsed ? "-rotate-90 transition-transform" : "transition-transform"}
+            className={
+              collapsed
+                ? "-rotate-90 transition-transform"
+                : "transition-transform"
+            }
           />
         </button>
         <p className="min-w-0 truncate font-mono text-[12px]">
@@ -369,7 +421,9 @@ function FileCard({
       </header>
       {!collapsed &&
         (file.binary ? (
-          <p className="px-3 py-3 font-mono text-[11px] text-faint">Binary file not shown</p>
+          <p className="px-3 py-3 font-mono text-[11px] text-faint">
+            Binary file not shown
+          </p>
         ) : file.hunks.length === 0 ? (
           <p className="px-3 py-3 font-mono text-[11px] text-faint">
             No textual changes in this file.
@@ -382,11 +436,17 @@ function FileCard({
                   <HunkHeader header={hunk.header} first={hunkIndex === 0} />
                   {view === "unified"
                     ? hunk.rows.map((row, rowIndex) => (
-                        <UnifiedRow key={`${hunkIndex}-${rowIndex}`} row={row} />
+                        <UnifiedRow
+                          key={`${hunkIndex}-${rowIndex}`}
+                          row={row}
+                        />
                       ))
                     : toSplitRows(hunk.rows).map((entry, rowIndex) =>
                         entry.kind === "meta" ? (
-                          <div key={`${hunkIndex}-${rowIndex}`} className="grid grid-cols-2">
+                          <div
+                            key={`${hunkIndex}-${rowIndex}`}
+                            className="grid grid-cols-2"
+                          >
                             <SplitSide row={entry.row} side="left" />
                             <SplitSide row={null} side="right" />
                           </div>
@@ -475,7 +535,9 @@ export function DiffView({
                 aria-pressed={view === option}
                 onClick={() => setView(option)}
                 className={`rounded px-2.5 py-1 font-mono text-[10.5px] uppercase tracking-[0.06em] transition focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-lime ${
-                  view === option ? "bg-panel-3 text-ink" : "text-faint hover:text-muted"
+                  view === option
+                    ? "bg-panel-3 text-ink"
+                    : "text-faint hover:text-muted"
                 }`}
               >
                 {option}

@@ -1,7 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { getQueue } from "../../lib/api";
 import { formatAgeMinutes } from "../../lib/format";
-import { AlertCircle, Clock3, Flame, GitPullRequest, Inbox } from "../../lib/icons";
+import {
+  AlertCircle,
+  Clock3,
+  Flame,
+  GitPullRequest,
+  Inbox,
+} from "../../lib/icons";
 import {
   EmptyState,
   ErrorBanner,
@@ -28,7 +34,8 @@ export function QueuePage({
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [dismissedError, setDismissedError] = useState<string | null>(null);
   const items = useMemo(() => data ?? [], [data]);
-  const active = items.find((item) => item.id === selectedId) ?? items[0] ?? null;
+  const active =
+    items.find((item) => item.id === selectedId) ?? items[0] ?? null;
 
   useEffect(() => {
     onLiveChange(error === null);
@@ -57,7 +64,8 @@ export function QueuePage({
     0,
   );
   const oldest = [...items].sort(
-    (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
+    (a, b) =>
+      new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
   )[0];
   const hasFailures = items.some(
     (item) => Object.keys(item.specialist_failures).length > 0,
@@ -102,13 +110,7 @@ export function QueuePage({
         <Metric
           icon={<Clock3 size={16} />}
           label="Oldest pending"
-          value={
-            oldest ? (
-              <AgeValue createdAt={oldest.created_at} />
-            ) : (
-              "—"
-            )
-          }
+          value={oldest ? <AgeValue createdAt={oldest.created_at} /> : "—"}
           detail="waiting for a decision"
           accent="cyan"
         />
@@ -161,9 +163,7 @@ function AgeValue({ createdAt }: { createdAt: string }) {
   useEffect(() => {
     const update = () =>
       setLabel(
-        formatAgeMinutes(
-          (Date.now() - new Date(createdAt).getTime()) / 60_000,
-        ),
+        formatAgeMinutes((Date.now() - new Date(createdAt).getTime()) / 60_000),
       );
     update();
     const id = window.setInterval(update, 60_000);

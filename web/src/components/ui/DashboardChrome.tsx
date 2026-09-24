@@ -19,7 +19,9 @@ export function Brand({ compact = false }: { compact?: boolean }) {
         P
       </span>
       {!compact && (
-        <strong className="text-[14.5px] font-extrabold tracking-[-0.03em]">Perchly</strong>
+        <strong className="text-[14.5px] font-extrabold tracking-[-0.03em]">
+          Perchly
+        </strong>
       )}
     </span>
   );
@@ -32,14 +34,22 @@ const NAV: {
 }[] = [
   {
     label: "Workspace",
-    href: { queue: "#queue", overview: "#overview", runs: "#runs" },
+    href: {
+      queue: "/console",
+      overview: "/console/overview",
+      runs: "/console/runs",
+    },
     items: [
       { key: "queue", label: "Approval queue", icon: <Inbox size={17} /> },
     ],
   },
   {
     label: "Observability",
-    href: { queue: "#queue", overview: "#overview", runs: "#runs" },
+    href: {
+      queue: "/console",
+      overview: "/console/overview",
+      runs: "/console/runs",
+    },
     items: [
       { key: "overview", label: "Overview", icon: <Gauge size={17} /> },
       { key: "runs", label: "Review runs", icon: <Activity size={17} /> },
@@ -66,7 +76,9 @@ export function Sidebar({
     <aside className="flex flex-col border-r border-line bg-[linear-gradient(180deg,rgba(18,23,21,0.55),transparent_45%)] px-3.5 pt-5 pb-[18px] max-[900px]:hidden">
       <div className="grid gap-[5px] px-2.5 pt-1.5 pb-[26px]">
         <Brand />
-        <span className="pl-[39px] text-[10px] text-faint">single workspace</span>
+        <span className="pl-[39px] text-[10px] text-faint">
+          single workspace
+        </span>
       </div>
       <nav className="grid gap-6" aria-label="Primary navigation">
         {NAV.map((group) => (
@@ -102,9 +114,21 @@ export function Sidebar({
         ))}
       </nav>
       <div className="mt-auto flex items-center gap-2.5 border-t border-line px-2.5 pt-4 pb-0.5">
-        {user.avatar_url ? <img src={user.avatar_url} alt="" className="size-[30px] rounded-full" /> : <div className="grid size-[30px] place-items-center rounded-full bg-[#394d43] text-[11px] font-extrabold text-lime">{user.login.slice(0, 1).toUpperCase()}</div>}
+        {user.avatar_url ? (
+          <img
+            src={user.avatar_url}
+            alt=""
+            className="size-[30px] rounded-full"
+          />
+        ) : (
+          <div className="grid size-[30px] place-items-center rounded-full bg-[#394d43] text-[11px] font-extrabold text-lime">
+            {user.login.slice(0, 1).toUpperCase()}
+          </div>
+        )}
         <div className="grid gap-0.5">
-          <strong className="max-w-[100px] truncate text-[12.5px] font-bold">{user.name}</strong>
+          <strong className="max-w-[100px] truncate text-[12.5px] font-bold">
+            {user.name}
+          </strong>
           <span className="text-[10px] text-faint">@{user.login}</span>
         </div>
         <span
@@ -114,7 +138,14 @@ export function Sidebar({
               : "ml-auto size-[7px] rounded-full bg-red"
           }
         />
-        <button type="button" onClick={onLogout} className="ml-1 text-[10px] text-faint transition hover:text-red focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-lime" aria-label="Sign out">SIGN OUT</button>
+        <button
+          type="button"
+          onClick={onLogout}
+          className="ml-1 text-[10px] text-faint transition hover:text-red focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-lime"
+          aria-label="Sign out"
+        >
+          SIGN OUT
+        </button>
       </div>
     </aside>
   );
@@ -168,13 +199,28 @@ export function Header({
         >
           <RefreshCw size={17} className={refreshing ? "animate-spin" : ""} />
         </button>
-        {user.avatar_url ? <img src={user.avatar_url} alt={`${user.name} avatar`} className="size-[30px] rounded-full" /> : <div className="grid size-[30px] place-items-center rounded-full bg-[#394d43] text-[11px] font-extrabold text-lime">{user.login.slice(0, 1).toUpperCase()}</div>}
-        <button type="button" onClick={onLogout} className="font-mono text-[10px] uppercase tracking-[0.08em] text-faint transition hover:text-red focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-lime">Sign out</button>
+        {user.avatar_url ? (
+          <img
+            src={user.avatar_url}
+            alt={`${user.name} avatar`}
+            className="size-[30px] rounded-full"
+          />
+        ) : (
+          <div className="grid size-[30px] place-items-center rounded-full bg-[#394d43] text-[11px] font-extrabold text-lime">
+            {user.login.slice(0, 1).toUpperCase()}
+          </div>
+        )}
+        <button
+          type="button"
+          onClick={onLogout}
+          className="font-mono text-[10px] uppercase tracking-[0.08em] text-faint transition hover:text-red focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-lime"
+        >
+          Sign out
+        </button>
       </div>
     </header>
   );
 }
-
 
 export function PageHeading({
   title,
@@ -191,7 +237,9 @@ export function PageHeading({
         <h2 className="text-[32px] font-extrabold leading-[1.12] tracking-[-0.035em] text-ink max-[900px]:text-[26px] max-[520px]:text-[24px]">
           {title}
         </h2>
-        <p className="mt-2 max-w-[60ch] text-[13px] text-muted">{description}</p>
+        <p className="mt-2 max-w-[60ch] text-[13px] text-muted">
+          {description}
+        </p>
       </div>
       {aside && <div className="flex items-center gap-2 pb-[3px]">{aside}</div>}
     </div>
@@ -229,7 +277,13 @@ const ACCENT: Record<string, string> = {
   violet: "text-violet",
 };
 
-export function Metric({ icon, label, value, detail, accent }: MetricCardProps) {
+export function Metric({
+  icon,
+  label,
+  value,
+  detail,
+  accent,
+}: MetricCardProps) {
   return (
     <div
       className={`relative flex min-h-[122px] gap-3.5 overflow-hidden rounded-lg border border-line bg-[linear-gradient(160deg,#151b18,#101411)] p-[17px] ${ACCENT[accent] ?? ACCENT.lime}`}
@@ -242,9 +296,14 @@ export function Metric({ icon, label, value, detail, accent }: MetricCardProps) 
         <strong className="mt-0.5 text-[27px] font-extrabold leading-[1.05] tracking-[-0.045em] tabular-nums break-words">
           {value}
         </strong>
-        <small className="truncate font-mono text-[10.5px] text-current">{detail}</small>
+        <small className="truncate font-mono text-[10.5px] text-current">
+          {detail}
+        </small>
       </div>
-      <span aria-hidden="true" className="absolute bottom-0 left-0 h-0.5 w-1/3 bg-current" />
+      <span
+        aria-hidden="true"
+        className="absolute bottom-0 left-0 h-0.5 w-1/3 bg-current"
+      />
     </div>
   );
 }
@@ -266,9 +325,15 @@ export function SectionLabel({
     >
       <span>{label}</span>
       <span className="h-px flex-1 bg-line" />
-      {hint && <span className="text-[10px] normal-case tracking-[0.04em] text-cyan">{hint}</span>}
+      {hint && (
+        <span className="text-[10px] normal-case tracking-[0.04em] text-cyan">
+          {hint}
+        </span>
+      )}
       {count !== undefined && (
-        <span className="text-[10px] normal-case tracking-[0.04em] text-faint">{count} open</span>
+        <span className="text-[10px] normal-case tracking-[0.04em] text-faint">
+          {count} open
+        </span>
       )}
     </div>
   );
@@ -302,7 +367,10 @@ export function ErrorBanner({
 
 export function SkeletonPanel({ rows = 4 }: { rows?: number }) {
   return (
-    <div className="grid gap-2.5 rounded-lg border border-line bg-panel p-3.5" aria-hidden="true">
+    <div
+      className="grid gap-2.5 rounded-lg border border-line bg-panel p-3.5"
+      aria-hidden="true"
+    >
       {Array.from({ length: rows }, (_, index) => (
         <span
           className="h-[52px] animate-pulse rounded-lg bg-panel-2 motion-reduce:animate-none"
@@ -326,8 +394,12 @@ export function EmptyState({
     <section className="grid min-h-[430px] place-items-center rounded-lg border border-line bg-panel p-8 text-center text-muted">
       <div>
         <span className="inline-grid place-items-center text-lime">{icon}</span>
-        <h3 className="mt-[18px] text-[15.5px] font-bold tracking-[-0.01em] text-ink">{title}</h3>
-        <p className="mx-auto mt-2 max-w-[340px] text-[13px] leading-[1.65] text-muted">{body}</p>
+        <h3 className="mt-[18px] text-[15.5px] font-bold tracking-[-0.01em] text-ink">
+          {title}
+        </h3>
+        <p className="mx-auto mt-2 max-w-[340px] text-[13px] leading-[1.65] text-muted">
+          {body}
+        </p>
       </div>
     </section>
   );
@@ -345,9 +417,13 @@ export function PanelHeading({
   className?: string;
 }) {
   return (
-    <div className={`flex items-start justify-between gap-3 px-[18px] pt-[18px] pb-3.5 ${className}`}>
+    <div
+      className={`flex items-start justify-between gap-3 px-[18px] pt-[18px] pb-3.5 ${className}`}
+    >
       <div>
-        <h3 className="text-[13.5px] font-bold tracking-[-0.01em] text-ink">{title}</h3>
+        <h3 className="text-[13.5px] font-bold tracking-[-0.01em] text-ink">
+          {title}
+        </h3>
         {meta && <p className="mt-[5px] text-[11.5px] text-faint">{meta}</p>}
       </div>
       {actions}
@@ -355,11 +431,7 @@ export function PanelHeading({
   );
 }
 
-export function NoTelemetry({
-  tone,
-}: {
-  tone: "ok" | "warn" | "error";
-}) {
+export function NoTelemetry({ tone }: { tone: "ok" | "warn" | "error" }) {
   return (
     <span
       className={`inline-flex items-center gap-1.5 rounded-full border border-dashed px-2.5 py-[5px] font-mono text-[10px] uppercase tracking-[0.07em] ${

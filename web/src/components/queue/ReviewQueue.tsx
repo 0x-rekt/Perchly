@@ -34,21 +34,38 @@ export function ReviewQueue({
 }) {
   const [facet, setFacet] = useState<QueueFacet>("all");
   const ordered = [...items].sort(
-    (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
+    (a, b) =>
+      new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
   );
   const visible =
-    facet === "all" ? ordered : ordered.filter((item) => facetOf(item) === facet);
-  const securityCount = ordered.filter((item) => facetOf(item) === "security").length;
-  const qualityCount = ordered.filter((item) => facetOf(item) === "quality").length;
+    facet === "all"
+      ? ordered
+      : ordered.filter((item) => facetOf(item) === facet);
+  const securityCount = ordered.filter(
+    (item) => facetOf(item) === "security",
+  ).length;
+  const qualityCount = ordered.filter(
+    (item) => facetOf(item) === "quality",
+  ).length;
   return (
-    <aside className="overflow-hidden rounded-lg border border-line bg-panel" aria-label="Pending reviews">
+    <aside
+      className="overflow-hidden rounded-lg border border-line bg-panel"
+      aria-label="Pending reviews"
+    >
       <div className="flex items-start justify-between gap-3 px-[18px] pt-[18px] pb-3.5">
         <div>
-          <h3 className="text-[13.5px] font-bold tracking-[-0.01em] text-ink">Pending reviews</h3>
-          <p className="mt-[5px] text-[11.5px] text-faint">Oldest items first</p>
+          <h3 className="text-[13.5px] font-bold tracking-[-0.01em] text-ink">
+            Pending reviews
+          </h3>
+          <p className="mt-[5px] text-[11.5px] text-faint">
+            Oldest items first
+          </p>
         </div>
       </div>
-      <div className="flex gap-[18px] border-b border-line px-[18px]" aria-label="Filter by domain">
+      <div
+        className="flex gap-[18px] border-b border-line px-[18px]"
+        aria-label="Filter by domain"
+      >
         <button
           type="button"
           className={`${FACET_TAB} ${facet === "all" ? FACET_TAB_ACTIVE : ""}`}
@@ -100,8 +117,12 @@ export function ReviewQueue({
                   {item.repository.slice(0, 1).toUpperCase()}
                 </span>
                 <div className="grid min-w-0 gap-0.5">
-                  <p className="truncate text-[12px] font-semibold text-ink">{item.repository}</p>
-                  <span className="font-mono text-[10px] text-faint">PR #{item.pr_number}</span>
+                  <p className="truncate text-[12px] font-semibold text-ink">
+                    {item.repository}
+                  </p>
+                  <span className="font-mono text-[10px] text-faint">
+                    PR #{item.pr_number}
+                  </span>
                 </div>
                 <ChevronRight size={16} className="ml-auto text-faint" />
               </div>

@@ -23,7 +23,8 @@ export function formatDuration(seconds: number | null | undefined): string {
 export function formatAgeMinutes(minutes: number): string {
   if (!Number.isFinite(minutes) || minutes <= 0) return "just now";
   if (minutes < 60) return `${Math.round(minutes)}m old`;
-  if (minutes < 1440) return `${Math.round(minutes / 60)}h ${pad(Math.round(minutes % 60))}m old`;
+  if (minutes < 1440)
+    return `${Math.round(minutes / 60)}h ${pad(Math.round(minutes % 60))}m old`;
   return `${Math.round(minutes / 1440)}d old`;
 }
 

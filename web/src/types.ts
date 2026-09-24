@@ -10,7 +10,12 @@ export type AuthUser = {
   avatar_url: string | null;
   workspace_id: number;
 };
-export type Workspace = { id: number; name: string; slug: string; role: string };
+export type Workspace = {
+  id: number;
+  name: string;
+  slug: string;
+  role: string;
+};
 
 export type Severity = "info" | "warning" | "critical";
 export type Finding = {

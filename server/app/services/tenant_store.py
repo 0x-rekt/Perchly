@@ -87,6 +87,52 @@ async def workspace_for_installation(installation_id: int) -> int | None:
     return await asyncio.to_thread(_workspace_for_installation, installation_id)
 
 
+async def link_installation(
+    installation_id: int,
+    *,
+    workspace_id: int | None = None,
+    account_login: str | None = None,
+    account_type: str | None = None,
+) -> int | None:
+    """Attach a GitHub App installation to the single Perchly workspace."""
+    return await asyncio.to_thread(
+        _link_installation,
+        installation_id,
+        workspace_id,
+        account_login,
+        account_type,
+    )
+
+
+def _link_installation(
+    installation_id: int,
+    workspace_id: int | None,
+    account_login: str | None,
+    account_type: str | None,
+) -> int | None:
+    def operation(connection) -> int | None:
+        initialize_schema_on_connection(connection)
+        selected = workspace_id
+        if selected is None:
+            rows = _run(connection, "SELECT id FROM workspaces ORDER BY id DESC LIMIT 1")
+            selected = int(rows[0][0]) if rows else None
+        if selected is None:
+            return None
+        _run(connection, """
+            INSERT INTO github_installations
+                (installation_id, workspace_id, account_login, account_type)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (installation_id) DO UPDATE SET
+                workspace_id = EXCLUDED.workspace_id,
+                account_login = EXCLUDED.account_login,
+                account_type = EXCLUDED.account_type,
+                updated_at = CURRENT_TIMESTAMP
+        """, (installation_id, selected, account_login, account_type))
+        _run(connection, "COMMIT")
+        return selected
+    return _execute(operation)
+
+
 def _workspace_for_installation(installation_id: int) -> int | None:
     def operation(connection) -> int | None:
         initialize_schema_on_connection(connection)

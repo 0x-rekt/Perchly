@@ -20,7 +20,9 @@ async function request<T>(
     headers: {
       Accept: "application/json",
       ...(OBSERVABILITY_KEY ? { "X-API-Key": OBSERVABILITY_KEY } : {}),
-      ...(init?.body !== undefined ? { "Content-Type": "application/json" } : {}),
+      ...(init?.body !== undefined
+        ? { "Content-Type": "application/json" }
+        : {}),
     },
     body:
       init?.body !== undefined && typeof init.body === "string"
@@ -47,8 +49,6 @@ export function logout(): Promise<void> {
   return request<void>("/auth/logout", { method: "POST" });
 }
 
-
-
 export function getQueue(): Promise<ReviewItem[]> {
   return request<ReviewItem[]>("/reviews/queue");
 }
@@ -71,7 +71,9 @@ export function getTraces(filters: TraceFilters = {}): Promise<TracesResponse> {
   if (filters.prNumber) params.set("pr_number", String(filters.prNumber));
   if (filters.headSha) params.set("head_sha", filters.headSha);
   const query = params.toString();
-  return request<TracesResponse>(`/observability/traces${query ? `?${query}` : ""}`);
+  return request<TracesResponse>(
+    `/observability/traces${query ? `?${query}` : ""}`,
+  );
 }
 
 export function getTrace(reviewRunId: string): Promise<TraceDetail> {
@@ -96,10 +98,13 @@ export function previewFixPr(
   findingId: string,
   reviewer: string,
 ): Promise<{ fix_id: number; diff: string; files: string[] }> {
-  return request(`/reviews/queue/${itemId}/findings/${encodeURIComponent(findingId)}/fix-pr/preview`, {
-    method: "POST",
-    body: { reviewer },
-  });
+  return request(
+    `/reviews/queue/${itemId}/findings/${encodeURIComponent(findingId)}/fix-pr/preview`,
+    {
+      method: "POST",
+      body: { reviewer },
+    },
+  );
 }
 
 export function createFixPr(
