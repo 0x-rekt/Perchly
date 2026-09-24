@@ -811,31 +811,7 @@ Perchly/
 
 ---
 
-## 9. Architecture Decisions
-
-### Why Temporal instead of Celery or plain asyncio?
-
-HITL reviews can sit in the queue for hours or days. Temporal's durable execution means the workflow state — including the "waiting for human signal" pause — survives worker restarts, deploys, and crashes with zero custom state-machine code. The `workflow.wait_condition` / signal pattern maps exactly onto the approve/reject/edit flow.
-
-### Why PostgreSQL + pgvector instead of a dedicated vector database?
-
-Perchly already needs PostgreSQL for the HITL queue and spans. Adding pgvector avoids a second infrastructure dependency, keeps retrieval + queue + observability data in one place for joins and transactions, and works on Neon's free tier.
-
-### Why the simple-query protocol for database writes?
-
-Some transaction-mode PostgreSQL poolers route pg8000's extended-protocol `Parse`/`Bind`/`Execute` messages to different backends, causing `SQLSTATE 26000` ("unnamed prepared statement does not exist"). Perchly uses PostgreSQL's simple-query protocol for these connections. SQL values are safely encoded by `_sql_literal()`; this avoids relying on a prepared statement staying on one pooled backend.
-
-### Why Gemini instead of Claude or OpenAI?
-
-Gemini's structured tool-use API supports typed Pydantic output schemas natively, which is how Perchly gets strongly-typed `Finding` objects without free-text parsing. The embedding API (`gemini-embedding-2`) is co-located, so one API key covers both generation and retrieval.
-
-### Why not auto-merge fix PRs?
-
-Agent-authored fix PRs (Phase 5) always target a human review step before merge. Auto-merging AI-generated code changes without human approval is explicitly out of scope to preserve trust — the agent proposes, humans decide.
-
----
-
-## 10. Roadmap
+## 9. Roadmap
 
 | Phase       | Status         | Description                                                                                                                                                                                                                 |
 | ----------- | -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -850,6 +826,6 @@ Agent-authored fix PRs (Phase 5) always target a human review step before merge.
 
 ---
 
-## 11. License
+## 10. License
 
 MIT — see [LICENSE](LICENSE).
