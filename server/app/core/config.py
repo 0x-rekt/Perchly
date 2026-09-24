@@ -9,6 +9,9 @@ GITHUB_WEBHOOK_SECRET = os.getenv("GITHUB_WEBHOOK_SECRET")
 GITHUB_APP_ID = os.getenv("GITHUB_APP_ID")
 GITHUB_PRIVATE_KEY_PATH = os.getenv("GITHUB_PRIVATE_KEY_PATH")
 GITHUB_API_URL = "https://api.github.com"
+GITHUB_APP_INSTALL_URL = os.getenv(
+    "GITHUB_APP_INSTALL_URL", "https://github.com/apps/perchly/installations/new"
+)
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
 DATABASE_URL = os.getenv("DATABASE_URL")

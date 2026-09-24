@@ -92,7 +92,17 @@ Set your GitHub App's webhook URL to your ngrok URL:
 https://<your-subdomain>.ngrok-free.app/webhooks/github
 ```
 
-**5. Install the App on a repo and open a PR — Perchly will review it.**
+**5. Sign in to the console, then install the App from Perchly.** The console
+adds a short-lived signed workspace state to GitHub's installation URL. GitHub
+returns that state to the setup URL, linking the new installation ID to the
+right workspace even when the setup callback uses a different host from the
+local console.
+
+Set the GitHub App **Setup URL** to
+`https://<your-domain>/auth/github/installation` and configure
+`GITHUB_APP_INSTALL_URL` as the app's installation page, for example
+`https://github.com/apps/perchly/installations/new`. Start installations from
+the signed-in Perchly console, then open a PR to trigger a review.
 
 ---
 
@@ -643,6 +653,7 @@ through `GET /auth/github`; `GET /auth/me` returns the current user and
 | `GITHUB_APP_ID`                        | ✅       | —                    | GitHub App numeric ID                                             |
 | `GITHUB_WEBHOOK_SECRET`                | ✅       | —                    | Shared webhook HMAC secret                                        |
 | `GITHUB_PRIVATE_KEY_PATH`              | ✅       | —                    | Path to the `.pem` private key file                               |
+| `GITHUB_APP_INSTALL_URL`                | —        | `https://github.com/apps/perchly/installations/new` | GitHub App install page |
 | `GITHUB_OAUTH_CLIENT_ID`                | ✅       | —                    | GitHub OAuth client ID for console sign-in                        |
 | `GITHUB_OAUTH_CLIENT_SECRET`            | ✅       | —                    | GitHub OAuth client secret                                        |
 | `GITHUB_OAUTH_REDIRECT_URI`             | —        | `http://localhost:8000/auth/github/callback` | OAuth callback URL |

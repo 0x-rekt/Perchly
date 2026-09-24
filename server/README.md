@@ -17,6 +17,7 @@ Required local configuration in `.env`:
 GITHUB_APP_ID=your-app-id
 GITHUB_WEBHOOK_SECRET=your-webhook-secret
 GITHUB_PRIVATE_KEY_PATH=./your-github-app-private-key.pem
+GITHUB_APP_INSTALL_URL=https://github.com/apps/perchly/installations/new
 GEMINI_API_KEY=your-gemini-api-key
 DATABASE_URL=postgresql://user:password@host/dbname?sslmode=require
 # Optional retrieval settings
@@ -38,11 +39,10 @@ phase, model, token, and error attributes; the PostgreSQL `agent_spans` table
 remains the queryable dashboard sink. Set `PERCHLY_OTEL_CONSOLE_EXPORT=true`
 locally to print completed SDK spans while debugging instrumentation.
 
-Findings are auto-posted only when all specialists succeed and every finding meets
-the configured confidence policy. Critical security findings, any specialist
-failure, and mixed-confidence reviews require approval. The approval queue is the
-next Phase 3 step; until it is connected, `NEEDS_APPROVAL` reviews are held without
-posting.
+Findings are auto-posted only when all specialists succeed and every finding
+meets the configured confidence policy. Critical security findings, specialist
+failures, and low-confidence reviews go to the approval queue. Approve/edit
+resumes the durable workflow and posts the selected review to GitHub.
 
 The retrieval layer creates the `repositories`, `code_chunks`, `embeddings`, and
 `review_context` tables in cloud PostgreSQL on the first review. Each review fetches full text
@@ -63,6 +63,13 @@ approval can reconstruct the review without rerunning Gemini.
 Approval-required Temporal workflows wait durably for one of the `approve_review`,
 `reject_review`, or `edit_review` signals. Approved and edited reviews are posted
 after the signal; rejected reviews are recorded without posting.
+
+Start GitHub App installation from the authenticated Perchly console. The
+backend adds a short-lived signed workspace state to `GITHUB_APP_INSTALL_URL`;
+GitHub returns it to the configured setup URL (`/auth/github/installation`),
+where the new installation ID is linked to that workspace. This avoids relying
+on a session cookie being shared between localhost and a public tunnel. An
+unlinked installation is never assigned to a guessed/default workspace.
 
 ### Agent-authored fix PRs
 
@@ -85,7 +92,7 @@ and `Metadata: Read-only`. Generated PR bodies contain a hidden Perchly marker. 
 webhook receiver ignores marked generated PR events, so humans can review and merge
 the PR without Perchly recursively reviewing its own change.
 
-Run the Phase 0 automated checks:
+Run the backend automated checks:
 
 ```powershell
 uv run pytest
@@ -93,7 +100,7 @@ uv run pytest
 
 Golden PR diffs for later model-quality evaluation live in `app/evals/fixtures/`.
 
-Run the live Phase 0 golden-model gate (uses `GEMINI_API_KEY` and consumes API quota):
+Run the live golden evaluation (uses `GEMINI_API_KEY` and consumes API quota):
 
 ```powershell
 uv run python -m app.evals.run

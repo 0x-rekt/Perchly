@@ -12,6 +12,7 @@ from app.services.idempotency import IdempotencyStore
 from app.services.github_webhooks import valid_github_signature
 from app.services.github_api import GENERATED_FIX_PR_MARKER
 from app.services.review_queue import ReviewQueueService
+from app.services.tenant_store import mark_installation_uninstalled
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/webhooks", tags=["github"])
@@ -44,6 +45,19 @@ async def receive_github_events(
         webhook_secret=GITHUB_WEBHOOK_SECRET,
     ):
         raise HTTPException(status_code=401, detail="Invalid webhook signature")
+
+    if x_github_event == "installation":
+        try:
+            event = json.loads(raw_body)
+        except json.JSONDecodeError as error:
+            raise HTTPException(status_code=400, detail="Invalid GitHub event payload") from error
+        installation = event.get("installation") or {}
+        installation_id = installation.get("id")
+        if event.get("action") == "deleted" and isinstance(installation_id, int):
+            await mark_installation_uninstalled(installation_id)
+            logger.info("Marked GitHub installation uninstalled installation_id=%s", installation_id)
+            return {"status": "recorded", "reason": "installation uninstalled"}
+        return {"status": "ignored", "reason": "unsupported installation action"}
 
     if x_github_event in {
         "pull_request_review",

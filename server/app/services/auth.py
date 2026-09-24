@@ -80,6 +80,44 @@ def session_token(user: dict[str, Any]) -> str:
     )
 
 
+def installation_state_token(user: dict[str, Any]) -> str:
+    """Sign short-lived workspace context for GitHub's cross-domain install flow."""
+    workspace_id = user.get("workspace_id")
+    github_id = user.get("github_id")
+    if not isinstance(workspace_id, int) or not isinstance(github_id, int):
+        raise AuthError("A signed-in workspace is required to install the GitHub App")
+    now = int(time.time())
+    return jwt.encode(
+        {
+            "purpose": "github-installation",
+            "workspace_id": workspace_id,
+            "github_id": github_id,
+            "nonce": secrets.token_urlsafe(18),
+            "iat": now,
+            "exp": now + 10 * 60,
+        },
+        session_secret(),
+        algorithm="HS256",
+    )
+
+
+def read_installation_state(token: str | None) -> dict[str, Any] | None:
+    if not token:
+        return None
+    try:
+        payload = jwt.decode(token, session_secret(), algorithms=["HS256"])
+    except jwt.PyJWTError:
+        return None
+    if (
+        payload.get("purpose") != "github-installation"
+        or not isinstance(payload.get("workspace_id"), int)
+        or not isinstance(payload.get("github_id"), int)
+        or not isinstance(payload.get("nonce"), str)
+    ):
+        return None
+    return payload
+
+
 def read_session(token: str | None) -> dict[str, Any] | None:
     if not token:
         return None

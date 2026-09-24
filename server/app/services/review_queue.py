@@ -217,7 +217,7 @@ class ReviewQueueService:
                     (workspace_id, delivery_id, repository, pr_number, head_sha,
                      review_payload_json, specialist_failures_json, status, reason)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, 'pending', %s)
-                ON CONFLICT (repository, pr_number, head_sha)
+                ON CONFLICT (workspace_id, repository, pr_number, head_sha)
                 DO UPDATE SET
                     workspace_id = COALESCE(review_queue.workspace_id, EXCLUDED.workspace_id),
                     updated_at = review_queue.updated_at
@@ -596,8 +596,7 @@ def _initialize_schema(connection) -> None:
             created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
             resolved_at TIMESTAMPTZ,
-            resolved_by TEXT,
-            UNIQUE (repository, pr_number, head_sha)
+            resolved_by TEXT
         )
         """,
     )
@@ -629,17 +628,20 @@ def _initialize_schema(connection) -> None:
         """
         DELETE FROM review_queue duplicate
         USING review_queue original
-        WHERE duplicate.repository = original.repository
+        WHERE duplicate.workspace_id IS NOT DISTINCT FROM original.workspace_id
+          AND duplicate.repository = original.repository
           AND duplicate.pr_number = original.pr_number
           AND duplicate.head_sha = original.head_sha
           AND duplicate.id > original.id
         """,
     )
+    _run(connection, "ALTER TABLE review_queue DROP CONSTRAINT IF EXISTS review_queue_repository_pr_number_head_sha_key")
+    _run(connection, "DROP INDEX IF EXISTS uq_review_queue_pr_head")
     _run(
         connection,
         """
-        CREATE UNIQUE INDEX IF NOT EXISTS uq_review_queue_pr_head
-        ON review_queue(repository, pr_number, head_sha)
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_review_queue_workspace_pr_head
+        ON review_queue(workspace_id, repository, pr_number, head_sha)
         """,
     )
     _run(

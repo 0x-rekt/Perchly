@@ -3,9 +3,20 @@ from typing import Annotated
 
 from fastapi import APIRouter, Cookie, HTTPException, Response, status
 from fastapi.responses import RedirectResponse
-from urllib.parse import urlencode
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
-from app.services.auth import AuthError, authorization_url, exchange_code, frontend_url, new_state, read_session, session_token
+from app.core.config import GITHUB_APP_INSTALL_URL
+from app.services.auth import (
+    AuthError,
+    authorization_url,
+    exchange_code,
+    frontend_url,
+    installation_state_token,
+    new_state,
+    read_installation_state,
+    read_session,
+    session_token,
+)
 from app.services.tenant_store import link_installation, upsert_user_and_workspace
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -49,13 +60,11 @@ async def github_installation(
     setup_action: str = "install",
     account_login: str | None = None,
     account_type: str | None = None,
-    perchly_session: Annotated[str | None, Cookie()] = None,
+    state: str | None = None,
 ) -> RedirectResponse:
-    """Receive GitHub App setup callbacks and map installations to one workspace."""
-    user = read_session(perchly_session)
-    workspace_id = user.get("workspace_id") if user else None
-    if workspace_id is not None and not isinstance(workspace_id, int):
-        workspace_id = None
+    """Map this installation using signed state from the initiating workspace."""
+    install_state = read_installation_state(state)
+    workspace_id = install_state.get("workspace_id") if install_state else None
     linked_workspace = await link_installation(
         installation_id,
         workspace_id=workspace_id,
@@ -64,6 +73,25 @@ async def github_installation(
     )
     params = {"installation": "connected" if linked_workspace is not None else "error", "setup_action": setup_action}
     return RedirectResponse(f"{frontend_url()}?{urlencode(params)}", status_code=status.HTTP_302_FOUND)
+
+
+@router.get("/github/install")
+async def begin_github_installation(
+    perchly_session: Annotated[str | None, Cookie()] = None,
+) -> RedirectResponse:
+    """Start GitHub App installation with signed, expiring workspace context."""
+    user = read_session(perchly_session)
+    if user is None:
+        return RedirectResponse("/auth/github", status_code=status.HTTP_302_FOUND)
+    try:
+        state = installation_state_token(user)
+    except AuthError as error:
+        raise HTTPException(status_code=401, detail=str(error)) from error
+    parsed = urlparse(GITHUB_APP_INSTALL_URL)
+    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    query["state"] = state
+    target = urlunparse(parsed._replace(query=urlencode(query)))
+    return RedirectResponse(target, status_code=status.HTTP_302_FOUND)
 
 
 @router.post("/logout", status_code=204)

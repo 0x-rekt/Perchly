@@ -52,6 +52,11 @@ async def fetch_review_context(input: dict[str, Any]) -> dict[str, Any]:
     # Older installations may not be linked yet; those reviews remain
     # unassigned until the GitHub installation callback has completed.
     workspace_id = await workspace_for_installation(values["installation_id"])
+    if workspace_id is None:
+        raise RuntimeError(
+            "GitHub App installation is not linked to a workspace; reinstall it "
+            "using the authenticated Perchly install link"
+        )
     return {
         **values,
         "workspace_id": workspace_id,

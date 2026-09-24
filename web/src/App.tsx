@@ -141,9 +141,7 @@ function HomePage({
   authError: string | null;
   onLogout: () => void;
 }) {
-  const installUrl =
-    import.meta.env.VITE_GITHUB_APP_INSTALL_URL ??
-    "https://github.com/apps/perchly/installations/new";
+  const installUrl = "/auth/github/install";
   const [heroStep, setHeroStep] = useState(0);
   const heroStates = [
     "Four specialists are reading the diff.",
@@ -208,7 +206,9 @@ function HomePage({
         <div className="animate-[fade-in_700ms_ease-out_both]">
           <div className="mb-7 inline-flex items-center gap-2 rounded-full border border-[#2d4938] bg-lime-soft px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.12em] text-lime">
             <span className="size-1.5 animate-pulse rounded-full bg-lime" />{" "}
-            {user ? `Welcome back, ${user.name.split(" ")[0]}` : "Human-calibrated code review"}
+            {user
+              ? `Welcome back, ${user.name.split(" ")[0]}`
+              : "Human-calibrated code review"}
           </div>
           <h1 className="max-w-[700px] text-[clamp(48px,7vw,84px)] font-black leading-[0.95] tracking-[-0.07em] text-ink">
             Ship faster.
@@ -231,8 +231,6 @@ function HomePage({
             </a>
             <a
               href={installUrl}
-              target="_blank"
-              rel="noreferrer"
               className="inline-flex items-center gap-2 rounded-md border border-line-strong px-5 py-3.5 text-[13px] font-bold text-ink transition duration-300 hover:-translate-y-0.5 hover:border-cyan hover:text-cyan"
             >
               Install the app <span>↗</span>
@@ -292,8 +290,6 @@ function HomePage({
             </div>
             <a
               href={installUrl}
-              target="_blank"
-              rel="noreferrer"
               className="inline-flex items-center justify-center gap-2 rounded-md bg-lime px-5 py-3.5 text-[13px] font-extrabold text-[#11170f] transition hover:-translate-y-0.5 hover:bg-[#dcff8a]"
             >
               Install Perchly <span>↗</span>

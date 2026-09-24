@@ -48,6 +48,7 @@ def initialize_schema() -> None:
                 workspace_id BIGINT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
                 account_login TEXT,
                 account_type TEXT,
+                uninstalled_at TIMESTAMPTZ,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
@@ -78,12 +79,7 @@ async def upsert_user_and_workspace(user: dict[str, Any]) -> dict[str, Any]:
 
 
 async def workspace_for_installation(installation_id: int) -> int | None:
-    """Resolve the owning workspace for a GitHub App installation.
-
-    The installation callback normally creates the explicit mapping. During
-    the single-workspace migration, fall back to the only existing workspace
-    so new webhook deliveries are not left unscoped.
-    """
+    """Resolve only an explicitly linked, currently installed workspace."""
     return await asyncio.to_thread(_workspace_for_installation, installation_id)
 
 
@@ -94,7 +90,7 @@ async def link_installation(
     account_login: str | None = None,
     account_type: str | None = None,
 ) -> int | None:
-    """Attach a GitHub App installation to the single Perchly workspace."""
+    """Attach/re-attach one GitHub App installation to its signed workspace."""
     return await asyncio.to_thread(
         _link_installation,
         installation_id,
@@ -112,45 +108,57 @@ def _link_installation(
 ) -> int | None:
     def operation(connection) -> int | None:
         initialize_schema_on_connection(connection)
-        selected = workspace_id
-        if selected is None:
-            rows = _run(connection, "SELECT id FROM workspaces ORDER BY id DESC LIMIT 1")
-            selected = int(rows[0][0]) if rows else None
-        if selected is None:
+        if workspace_id is None:
             return None
-        _run(connection, """
+        rows = _run(connection, """
             INSERT INTO github_installations
                 (installation_id, workspace_id, account_login, account_type)
             VALUES (%s, %s, %s, %s)
             ON CONFLICT (installation_id) DO UPDATE SET
-                workspace_id = EXCLUDED.workspace_id,
                 account_login = EXCLUDED.account_login,
                 account_type = EXCLUDED.account_type,
+                workspace_id = CASE
+                    WHEN github_installations.uninstalled_at IS NOT NULL
+                    THEN EXCLUDED.workspace_id
+                    ELSE github_installations.workspace_id
+                END,
+                uninstalled_at = NULL,
                 updated_at = CURRENT_TIMESTAMP
-        """, (installation_id, selected, account_login, account_type))
+            RETURNING workspace_id
+        """, (installation_id, workspace_id, account_login, account_type))
         _run(connection, "COMMIT")
-        return selected
+        return int(rows[0][0]) if rows else None
     return _execute(operation)
 
 
 def _workspace_for_installation(installation_id: int) -> int | None:
     def operation(connection) -> int | None:
         initialize_schema_on_connection(connection)
-        rows = _run(connection, "SELECT workspace_id FROM github_installations WHERE installation_id = %s", (installation_id,))
-        if rows:
-            return int(rows[0][0])
-        rows = _run(connection, "SELECT id FROM workspaces ORDER BY id DESC LIMIT 1")
-        if not rows:
-            return None
-        workspace_id = int(rows[0][0])
-        _run(connection, """
-            INSERT INTO github_installations (installation_id, workspace_id)
-            VALUES (%s, %s)
-            ON CONFLICT (installation_id) DO NOTHING
-        """, (installation_id, workspace_id))
-        _run(connection, "COMMIT")
-        return workspace_id
+        rows = _run(
+            connection,
+            "SELECT workspace_id FROM github_installations "
+            "WHERE installation_id = %s AND uninstalled_at IS NULL",
+            (installation_id,),
+        )
+        return int(rows[0][0]) if rows else None
     return _execute(operation)
+
+
+async def mark_installation_uninstalled(installation_id: int) -> None:
+    await asyncio.to_thread(_mark_installation_uninstalled, installation_id)
+
+
+def _mark_installation_uninstalled(installation_id: int) -> None:
+    def operation(connection) -> None:
+        initialize_schema_on_connection(connection)
+        _run(
+            connection,
+            "UPDATE github_installations SET uninstalled_at = CURRENT_TIMESTAMP, "
+            "updated_at = CURRENT_TIMESTAMP WHERE installation_id = %s",
+            (installation_id,),
+        )
+        _run(connection, "COMMIT")
+    _execute(operation)
 
 
 def _upsert_user_and_workspace(user: dict[str, Any]) -> dict[str, Any]:
@@ -216,10 +224,12 @@ def initialize_schema_on_connection(connection) -> None:
             workspace_id BIGINT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
             account_login TEXT,
             account_type TEXT,
+            uninstalled_at TIMESTAMPTZ,
             created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    _run(connection, "ALTER TABLE github_installations ADD COLUMN IF NOT EXISTS uninstalled_at TIMESTAMPTZ")
 
 
 def _workspace_slug(login: str, user_id: int) -> str:

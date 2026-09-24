@@ -102,9 +102,9 @@ async def create_review_fix_pr(fix_id: int, request: FixPullRequestRequest, user
     fix = await queue.get_fix_preview(fix_id)
     if fix is None:
         raise HTTPException(status_code=404, detail="Fix preview not found")
+    item = await _require_item(int(fix["queue_item_id"]), _workspace_id(user))
     if fix["status"] == "created" and fix.get("pull_request_url"):
         return {"fix_id": fix_id, "pull_request_url": fix["pull_request_url"], "branch": fix["branch"]}
-    item = await _require_item(int(fix["queue_item_id"]), _workspace_id(user))
     installation_id = item.get("review_payload", {}).get("installation_id")
     if not isinstance(installation_id, int):
         raise HTTPException(status_code=409, detail="This review does not have GitHub installation context")

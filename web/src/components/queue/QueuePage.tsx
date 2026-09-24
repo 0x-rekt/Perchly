@@ -142,7 +142,11 @@ export function QueuePage({
             onSelect={setSelectedId}
           />
           {active ? (
-            <ReviewDetail item={active} reviewer={reviewer} onComplete={reload} />
+            <ReviewDetail
+              item={active}
+              reviewer={reviewer}
+              onComplete={reload}
+            />
           ) : (
             <EmptyState
               icon={<GitPullRequest size={40} />}
