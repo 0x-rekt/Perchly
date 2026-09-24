@@ -323,7 +323,7 @@ Span fields: `review_run_id`, `repository`, `pr_number`, `head_sha`, `agent`, `p
 
 - `daily_review_metrics` — per-day: review count, total cost, p50/p95 latency, acceptance rates.
 
-**Dashboard endpoints** (`/observability/*`) are protected by `PERCHLY_OBSERVABILITY_API_KEY` (header `X-Api-Key` or `Authorization: Bearer <key>`).
+**Dashboard endpoints** (`/observability/*`) require the signed-in GitHub session and a workspace assignment, matching the review console.
 
 ### 3.8 Learning Loop
 
@@ -461,7 +461,7 @@ daily_review_metrics (day, total_reviews, total_cost_usd, avg_cost_per_review_us
 | `POST` | `/reviews/queue/{id}/findings/{finding_id}/fix-pr/preview` | `{reviewer}` | Generate and persist a fix diff |
 | `POST` | `/reviews/fix-pr/{fix_id}/create` | `{reviewer}` | Confirm preview and open/reuse a GitHub PR |
 
-### Observability _(requires `X-Api-Key` or `Authorization: Bearer <key>`)_
+### Observability _(requires a signed-in GitHub session)_
 
 | Method | Path                                    | Query                                                                        | Description                              |
 | ------ | --------------------------------------- | ---------------------------------------------------------------------------- | ---------------------------------------- |
@@ -488,7 +488,6 @@ daily_review_metrics (day, total_reviews, total_cost_usd, avg_cost_per_review_us
 | `DATABASE_URL`                         | ✅       | —                    | PostgreSQL connection string (`postgresql://...?sslmode=require`) |
 | `TEMPORAL_ADDRESS`                     | ✅       | `localhost:7233`     | Temporal server gRPC address                                      |
 | `TEMPORAL_TASK_QUEUE`                  | ✅       | `perchly-reviews`    | Temporal task queue name                                          |
-| `PERCHLY_OBSERVABILITY_API_KEY`        | ✅       | —                    | Secret key for `/observability/*`                                 |
 | `GEMINI_MODEL`                         | —        | `gemini-3.8-flash`   | Gemini generation model                                           |
 | `GEMINI_EMBEDDING_MODEL`               | —        | `gemini-embedding-2` | Gemini embedding model                                            |
 | `EMBEDDING_DIMENSIONS`                 | —        | `768`                | Embedding vector dimensions                                       |

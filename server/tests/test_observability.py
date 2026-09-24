@@ -247,7 +247,7 @@ def test_traces_endpoint_rejects_inverted_time_window(
 
     with pytest.raises(HTTPException) as exc:
         asyncio.run(
-            observability.traces(since=since, until=until)
+            observability.traces(since=since, until=until, user={"workspace_id": 1})
         )
     assert exc.value.status_code == 422
 
@@ -256,7 +256,7 @@ def test_overview_endpoint_delegates_to_service(monkeypatch: pytest.MonkeyPatch)
     expected = {"window_days": 14, "reviews_per_day": []}
     monkeypatch.setattr(telemetry, "overview_metrics", lambda days: expected)
 
-    result = asyncio.run(observability.overview(days=14))
+    result = asyncio.run(observability.overview(days=14, user={"workspace_id": 1}))
     assert result is expected
 
 
@@ -269,6 +269,17 @@ def test_trace_detail_endpoint_returns_404_when_missing(
 
     with pytest.raises(HTTPException) as exc:
         asyncio.run(
-            observability.trace_detail("perchly-review-acme/repo-7-abc")
+            observability.trace_detail(
+                "perchly-review-acme/repo-7-abc", user={"workspace_id": 1}
+            )
         )
     assert exc.value.status_code == 404
+
+
+def test_observability_requires_workspace_assignment() -> None:
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as exc:
+        observability._require_workspace({"github_id": 123})
+
+    assert exc.value.status_code == 403

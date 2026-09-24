@@ -8,7 +8,6 @@ import type {
 } from "../types";
 
 const API = import.meta.env.VITE_API_URL ?? "";
-const OBSERVABILITY_KEY = import.meta.env.VITE_OBSERVABILITY_API_KEY;
 
 async function request<T>(
   path: string,
@@ -19,7 +18,6 @@ async function request<T>(
     credentials: "include",
     headers: {
       Accept: "application/json",
-      ...(OBSERVABILITY_KEY ? { "X-API-Key": OBSERVABILITY_KEY } : {}),
       ...(init?.body !== undefined
         ? { "Content-Type": "application/json" }
         : {}),

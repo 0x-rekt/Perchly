@@ -19,7 +19,6 @@ To use another API origin, create `web/.env.local`:
 
 ```env
 VITE_API_URL=https://api.example.com
-VITE_OBSERVABILITY_API_KEY=the-same-value-as-PERCHLY_OBSERVABILITY_API_KEY
 ```
 
 Build for production with:

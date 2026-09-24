@@ -28,8 +28,6 @@ PERCHLY_MAX_AUTO_POST_FINDINGS=20
 # Optional OpenTelemetry console exporter for local tracing diagnostics.
 # Keep disabled in production unless logs are protected from source-code data.
 PERCHLY_OTEL_CONSOLE_EXPORT=false
-# Required to access /observability/*
-PERCHLY_OBSERVABILITY_API_KEY=replace-with-a-long-random-value
 # Optional OTLP/HTTP collector endpoint, e.g. Grafana Tempo or Jaeger
 OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318/v1/traces
 ```
