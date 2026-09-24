@@ -120,7 +120,11 @@ function ConsoleApp({
           ) : route === "runs" ? (
             <ReviewRuns onLiveChange={setLive} />
           ) : (
-            <QueuePage onLiveChange={setLive} onQueueCount={setQueueCount} />
+            <QueuePage
+              onLiveChange={setLive}
+              onQueueCount={setQueueCount}
+              reviewer={user.login}
+            />
           )}
         </main>
       </div>

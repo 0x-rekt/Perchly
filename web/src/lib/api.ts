@@ -85,7 +85,7 @@ export function getTrace(reviewRunId: string): Promise<TraceDetail> {
 export function submitDecision(
   itemId: number,
   decision: Decision,
-  body: { reviewer: string; comment: string | null; edited_review?: unknown },
+  body: { comment: string | null; edited_review?: unknown },
 ): Promise<unknown> {
   return request<unknown>(`/reviews/queue/${itemId}/${decision}`, {
     method: "POST",
@@ -96,23 +96,21 @@ export function submitDecision(
 export function previewFixPr(
   itemId: number,
   findingId: string,
-  reviewer: string,
 ): Promise<{ fix_id: number; diff: string; files: string[] }> {
   return request(
     `/reviews/queue/${itemId}/findings/${encodeURIComponent(findingId)}/fix-pr/preview`,
     {
       method: "POST",
-      body: { reviewer },
+      body: {},
     },
   );
 }
 
 export function createFixPr(
   fixId: number,
-  reviewer: string,
 ): Promise<{ fix_id: number; pull_request_url: string; branch: string }> {
   return request(`/reviews/fix-pr/${fixId}/create`, {
     method: "POST",
-    body: { reviewer },
+    body: {},
   });
 }

@@ -27,9 +27,11 @@ const ACTION_VARIANT: Record<"primary" | "danger" | "secondary", string> = {
 
 export function ReviewDetail({
   item,
+  reviewer,
   onComplete,
 }: {
   item: ReviewItem;
+  reviewer: string;
   onComplete: () => void;
 }) {
   const review = useMemo(
@@ -37,7 +39,6 @@ export function ReviewDetail({
     [item.review_payload.review],
   );
   const diff = item.review_payload.diff;
-  const [reviewer, setReviewer] = useState("");
   const [comment, setComment] = useState("");
   const [tab, setTab] = useState<DetailTab>("findings");
   const [editMode, setEditMode] = useState(false);
@@ -79,10 +80,6 @@ export function ReviewDetail({
   }, [review.findings]);
 
   const submit = async (decision: Decision) => {
-    if (!reviewer.trim()) {
-      setError("Enter your name or email before submitting.");
-      return;
-    }
     let editedReview: Review | undefined;
     if (decision === "edit") {
       try {
@@ -97,7 +94,6 @@ export function ReviewDetail({
     setBusy(decision);
     try {
       await submitDecision(item.id, decision, {
-        reviewer: reviewer.trim(),
         comment: comment.trim() || null,
         ...(editedReview ? { edited_review: editedReview } : {}),
       });
@@ -227,12 +223,6 @@ export function ReviewDetail({
                   finding.finding_id ? fixLinks[finding.finding_id] : undefined
                 }
                 onFix={async () => {
-                  if (!reviewer.trim()) {
-                    setError(
-                      "Enter your name or email before raising a fix PR.",
-                    );
-                    return;
-                  }
                   if (!finding.finding_id) {
                     setError(
                       "This finding has no stable ID and cannot be fixed safely.",
@@ -245,7 +235,6 @@ export function ReviewDetail({
                     const result = await previewFixPr(
                       item.id,
                       finding.finding_id,
-                      reviewer.trim(),
                     );
                     setPreview({
                       fixId: result.fix_id,
@@ -291,7 +280,7 @@ export function ReviewDetail({
             onDismissError={() => setError(null)}
             onConfirm={() => {
               setFixing(preview.findingId);
-              void createFixPr(preview.fixId, reviewer.trim())
+              void createFixPr(preview.fixId)
                 .then((result) => {
                   setFixLinks((current) => ({
                     ...current,
@@ -329,20 +318,16 @@ export function ReviewDetail({
             </button>
           </div>
         )}
-        <div className="grid grid-cols-2 gap-3 max-[520px]:grid-cols-1">
-          <Field
-            label="Reviewer"
-            value={reviewer}
-            onChange={setReviewer}
-            placeholder="you@example.com"
-          />
-          <Field
-            label="Comment (optional)"
-            value={comment}
-            onChange={setComment}
-            placeholder="Why did you choose this decision?"
-          />
+        <div className="mb-3 flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.08em] text-faint">
+          <span className="size-1.5 rounded-full bg-lime" />
+          Recorded as @{reviewer}
         </div>
+        <Field
+          label="Comment (optional)"
+          value={comment}
+          onChange={setComment}
+          placeholder="Why did you choose this decision?"
+        />
         {editMode && (
           <label className="mt-3.5 grid gap-[7px] text-[12px] text-muted">
             <span className="text-[11px] font-semibold tracking-[0.02em]">

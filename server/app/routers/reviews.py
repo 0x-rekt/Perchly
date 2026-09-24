@@ -33,12 +33,12 @@ async def get_review_queue_item(queue_item_id: int, user: dict[str, Any] = Depen
 
 @router.post("/queue/{queue_item_id}/approve")
 async def approve_review(queue_item_id: int, request: ReviewDecisionRequest, user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
-    return await _resolve(queue_item_id, "approve", request.reviewer, request.comment, workspace_id=_workspace_id(user))
+    return await _resolve(queue_item_id, "approve", _reviewer(user, request.reviewer), request.comment, workspace_id=_workspace_id(user))
 
 
 @router.post("/queue/{queue_item_id}/reject")
 async def reject_review(queue_item_id: int, request: ReviewDecisionRequest, user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
-    return await _resolve(queue_item_id, "reject", request.reviewer, request.comment, workspace_id=_workspace_id(user))
+    return await _resolve(queue_item_id, "reject", _reviewer(user, request.reviewer), request.comment, workspace_id=_workspace_id(user))
 
 
 @router.post("/queue/{queue_item_id}/edit")
@@ -46,7 +46,7 @@ async def edit_review(queue_item_id: int, request: EditReviewRequest, user: dict
     return await _resolve(
         queue_item_id,
         "edit",
-        request.reviewer,
+        _reviewer(user, request.reviewer),
         request.comment,
         request.edited_review.model_dump(), workspace_id=_workspace_id(user),
     )
@@ -77,7 +77,7 @@ async def preview_fix_pr(
         fix_id = await queue.save_fix_preview(
             queue_item_id=queue_item_id,
             finding_id=finding_id,
-            reviewer=request.reviewer,
+            reviewer=_reviewer(user, request.reviewer),
             patch={
                 "files": [
                     {"path": value.path, "before": value.before, "after": value.after, "diff": value.diff}
@@ -126,7 +126,7 @@ async def create_review_fix_pr(fix_id: int, request: FixPullRequestRequest, user
             head_sha=item["head_sha"], finding=finding, patch=patch,
             installation_token=token,
         )
-        await queue.mark_fix_created(fix_id=fix_id, reviewer=request.reviewer, branch=result.branch, url=result.url)
+        await queue.mark_fix_created(fix_id=fix_id, reviewer=_reviewer(user, request.reviewer), branch=result.branch, url=result.url)
     except FixPrError as error:
         try:
             await queue.mark_fix_failed(fix_id=fix_id)
@@ -156,6 +156,14 @@ def _workspace_id(user: dict[str, Any] | None) -> int | None:
     if not isinstance(value, int):
         raise HTTPException(status_code=403, detail="User is not assigned to a workspace")
     return value
+
+
+def _reviewer(user: dict[str, Any] | None, fallback: str | None = None) -> str:
+    login = user.get("login") if isinstance(user, dict) else None
+    reviewer = login if isinstance(login, str) and login.strip() else fallback
+    if not isinstance(reviewer, str) or not reviewer.strip():
+        raise HTTPException(status_code=401, detail="Authenticated GitHub identity is required")
+    return reviewer.strip()
 
 
 async def _require_item(queue_item_id: int, workspace_id: int | None = None) -> dict[str, Any]:

@@ -25,9 +25,11 @@ import { ReviewQueue } from "./ReviewQueue";
 export function QueuePage({
   onLiveChange,
   onQueueCount,
+  reviewer,
 }: {
   onLiveChange: (live: boolean) => void;
   onQueueCount: (count: number) => void;
+  reviewer: string;
 }) {
   const surface = useSurface<ReviewItem[]>(getQueue);
   const { data, error, loading, reloading, reload } = surface;
@@ -140,7 +142,7 @@ export function QueuePage({
             onSelect={setSelectedId}
           />
           {active ? (
-            <ReviewDetail item={active} onComplete={reload} />
+            <ReviewDetail item={active} reviewer={reviewer} onComplete={reload} />
           ) : (
             <EmptyState
               icon={<GitPullRequest size={40} />}

@@ -6,7 +6,7 @@ from app.schemas.findings import Finding
 
 
 class ReviewDecisionRequest(BaseModel):
-    reviewer: str = Field(min_length=1)
+    reviewer: str | None = Field(default=None, min_length=1)
     comment: str | None = None
 
 
@@ -20,4 +20,4 @@ class EditReviewRequest(ReviewDecisionRequest):
 
 
 class FixPullRequestRequest(BaseModel):
-    reviewer: str = Field(min_length=1)
+    reviewer: str | None = Field(default=None, min_length=1)
