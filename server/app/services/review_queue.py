@@ -73,7 +73,6 @@ class ReviewQueueService:
         head_sha: str,
         review_payload: dict[str, Any],
         reason: str,
-        workspace_id: int | None = None,
     ) -> int:
         return await asyncio.to_thread(
             self._record_automatic_decision,
@@ -83,7 +82,6 @@ class ReviewQueueService:
             head_sha=head_sha,
             review_payload=review_payload,
             reason=reason,
-            workspace_id=workspace_id,
         )
 
     async def record_reviewer_decision(
@@ -183,28 +181,28 @@ class ReviewQueueService:
             _run(connection, "COMMIT")
         _execute(operation)
 
-    def _list_items(self, status: str, workspace_id: int | None) -> list[dict[str, Any]]:
+    def _list_items(self, status: str, workspace_id: int | None = None) -> list[dict[str, Any]]:
         def operation(connection) -> list[dict[str, Any]]:
             _initialize_schema(connection)
             query = _SELECT_ITEM_SQL + " WHERE status = %s"
-            parameters: tuple[Any, ...] = (status,)
+            params: tuple[Any, ...] = (status,)
             if workspace_id is not None:
                 query += " AND workspace_id = %s"
-                parameters += (workspace_id,)
-            rows = _run(connection, query + " ORDER BY created_at ASC", parameters)
+                params += (workspace_id,)
+            rows = _run(connection, query + " ORDER BY created_at ASC", params)
             return [_queue_item(row) for row in rows]
 
         return _execute(operation)
 
-    def _get_item(self, queue_item_id: int, workspace_id: int | None) -> dict[str, Any] | None:
+    def _get_item(self, queue_item_id: int, workspace_id: int | None = None) -> dict[str, Any] | None:
         def operation(connection) -> dict[str, Any] | None:
             _initialize_schema(connection)
             query = _SELECT_ITEM_SQL + " WHERE id = %s"
-            parameters: tuple[Any, ...] = (queue_item_id,)
+            params: tuple[Any, ...] = (queue_item_id,)
             if workspace_id is not None:
                 query += " AND workspace_id = %s"
-                parameters += (workspace_id,)
-            rows = _run(connection, query, parameters)
+                params += (workspace_id,)
+            rows = _run(connection, query, params)
             return _queue_item(rows[0]) if rows else None
 
         return _execute(operation)
@@ -216,14 +214,17 @@ class ReviewQueueService:
                 connection,
                 """
                 INSERT INTO review_queue
-                    (delivery_id, repository, pr_number, head_sha,
-                     review_payload_json, specialist_failures_json, status, reason, workspace_id)
-                VALUES (%s, %s, %s, %s, %s, %s, 'pending', %s, %s)
+                    (workspace_id, delivery_id, repository, pr_number, head_sha,
+                     review_payload_json, specialist_failures_json, status, reason)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, 'pending', %s)
                 ON CONFLICT (repository, pr_number, head_sha)
-                DO UPDATE SET updated_at = review_queue.updated_at
+                DO UPDATE SET
+                    workspace_id = COALESCE(review_queue.workspace_id, EXCLUDED.workspace_id),
+                    updated_at = review_queue.updated_at
                 RETURNING id
                 """,
                 (
+                    values.get("workspace_id"),
                     values["delivery_id"],
                     values["repository"],
                     values["pr_number"],
@@ -231,7 +232,6 @@ class ReviewQueueService:
                     json.dumps(values["review_payload"], separators=(",", ":")),
                     json.dumps(values["specialist_failures"], separators=(",", ":")),
                     values["reason"],
-                    values.get("workspace_id"),
                 ),
             )[0]
             _run(connection, "COMMIT")
@@ -256,13 +256,13 @@ class ReviewQueueService:
                 UPDATE review_queue
                 SET updated_at = CURRENT_TIMESTAMP
                 WHERE id = %s AND status = 'pending'
-                RETURNING id, review_payload_json, repository, pr_number, head_sha, workspace_id
+                RETURNING id, review_payload_json, repository, pr_number, head_sha
                 """,
                 (values["queue_item_id"],),
             )
             if not updated:
                 raise RuntimeError("review queue item is missing or already resolved")
-            queue_id, stored_payload, repository, pr_number, head_sha, workspace_id = updated[0]
+            queue_id, stored_payload, repository, pr_number, head_sha = updated[0]
             row = _run(
                 connection,
                 """
@@ -300,7 +300,6 @@ class ReviewQueueService:
             _insert_outcome_examples(
                 connection,
                 repository=repository,
-                workspace_id=workspace_id,
                 pr_number=int(pr_number),
                 head_sha=head_sha,
                 findings=_findings_from_review(review_payload),
@@ -320,16 +319,15 @@ class ReviewQueueService:
                 connection,
                 """
                 INSERT INTO review_outcomes
-                    (delivery_id, workspace_id, repository, pr_number, head_sha,
+                    (delivery_id, repository, pr_number, head_sha,
                      outcome, review_payload_json, reason)
-                VALUES (%s, %s, %s, %s, %s, 'auto_post', %s, %s)
+                VALUES (%s, %s, %s, %s, 'auto_post', %s, %s)
                 ON CONFLICT (repository, pr_number, head_sha)
                 DO UPDATE SET updated_at = CURRENT_TIMESTAMP
                 RETURNING id
                 """,
                 (
                     values["delivery_id"],
-                    values.get("workspace_id"),
                     values["repository"],
                     values["pr_number"],
                     values["head_sha"],
@@ -340,7 +338,6 @@ class ReviewQueueService:
             _insert_outcome_examples(
                 connection,
                 repository=values["repository"],
-                workspace_id=values.get("workspace_id"),
                 pr_number=values["pr_number"],
                 head_sha=values["head_sha"],
                 findings=_findings_from_review(values["review_payload"]),
@@ -362,16 +359,16 @@ class ReviewQueueService:
                 connection,
                 """
                 INSERT INTO outcome_examples (
-                    workspace_id, repository, pr_number, head_sha, finding_id, category,
+                    repository, pr_number, head_sha, finding_id, category,
                     finding_json, final_outcome, source_queue_item_id,
                     source_review_run_id
                 )
-                SELECT workspace_id, repository, pr_number, head_sha, finding_id, category,
+                SELECT repository, pr_number, head_sha, finding_id, category,
                        finding_json, %s, source_queue_item_id,
                        source_review_run_id
                 FROM (
                     SELECT DISTINCT ON (finding_id)
-                           workspace_id, repository, pr_number, head_sha, finding_id,
+                           repository, pr_number, head_sha, finding_id,
                            category, finding_json, source_queue_item_id,
                            source_review_run_id
                     FROM outcome_examples
@@ -413,7 +410,6 @@ def _insert_outcome_examples(
     connection: Any,
     *,
     repository: str,
-    workspace_id: int | None = None,
     pr_number: int,
     head_sha: str,
     findings: list[dict[str, Any]],
@@ -431,16 +427,14 @@ def _insert_outcome_examples(
         head_sha=head_sha,
     )
     for finding in parsed:
-        workspace_value = (workspace_id,) if workspace_id is not None else ()
-        workspace_sql = "%s" if workspace_id is not None else "NULL"
         _run(
             connection,
-            f"""
+            """
             INSERT INTO outcome_examples (
                 repository, pr_number, head_sha, finding_id, category,
                 finding_json, final_outcome, reviewer,
-                source_queue_item_id, source_review_run_id, workspace_id
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, {workspace_sql})
+                source_queue_item_id, source_review_run_id
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (repository, pr_number, head_sha, finding_id, final_outcome)
             DO UPDATE SET
                 finding_json = EXCLUDED.finding_json,
@@ -457,15 +451,23 @@ def _insert_outcome_examples(
                 reviewer,
                 source_queue_item_id,
                 source_review_run_id,
-                *workspace_value,
             ),
         )
 
 
 _SELECT_ITEM_SQL = """
-    SELECT id, delivery_id, repository, pr_number, head_sha, workspace_id,
+    SELECT id, workspace_id, delivery_id, repository, pr_number, head_sha,
            review_payload_json, specialist_failures_json, status, reason,
-           created_at, updated_at, resolved_at, resolved_by
+           created_at, updated_at, resolved_at, resolved_by,
+           COALESCE((
+               SELECT jsonb_agg(jsonb_build_object(
+                   'finding_id', finding_id,
+                   'status', status,
+                   'pull_request_url', pull_request_url,
+                   'branch', branch
+               ) ORDER BY updated_at DESC)
+               FROM fix_prs WHERE queue_item_id = review_queue.id
+           ), '[]'::jsonb) AS fix_prs
     FROM review_queue
 """
 
@@ -540,22 +542,38 @@ def _connect():
 
 
 def _queue_item(row: list[Any]) -> dict[str, Any]:
+    # Rows supplied by older callers/tests predate workspace_id. Database
+    # reads use the new SELECT shape, but accept the old shape during rollout.
+    if len(row) <= 13:
+        legacy_fields = (
+            "id", "delivery_id", "repository", "pr_number", "head_sha",
+            "review_payload", "specialist_failures", "status", "reason",
+            "created_at", "updated_at", "resolved_at", "resolved_by",
+        )
+        values = list(row)
+        if len(values) < len(legacy_fields):
+            values.extend([None] * (len(legacy_fields) - len(values)))
+        item = dict(zip(legacy_fields, values, strict=False))
+        item["workspace_id"] = None
+        return item
     fields = (
-        "id", "delivery_id", "repository", "pr_number", "head_sha", "workspace_id",
+        "id", "workspace_id", "delivery_id", "repository", "pr_number", "head_sha",
         "review_payload", "specialist_failures", "status", "reason",
-        "created_at", "updated_at", "resolved_at", "resolved_by",
+        "created_at", "updated_at", "resolved_at", "resolved_by", "fix_prs",
     )
     # Older queue rows/databases may not include the nullable resolution
     # columns. Keep reads backward-compatible while the schema initializer
     # upgrades the table for future writes.
     values = list(row)
-    # Rows written before workspace ownership was added have review payload at
-    # index 5. Insert the nullable workspace slot before applying the fields.
-    if len(values) >= 6 and isinstance(values[5], (dict, str)):
-        values.insert(5, None)
     if len(values) < len(fields):
         values.extend([None] * (len(fields) - len(values)))
-    return dict(zip(fields, values, strict=False))
+    item = dict(zip(fields, values, strict=False))
+    if isinstance(item.get("fix_prs"), str):
+        try:
+            item["fix_prs"] = json.loads(item["fix_prs"])
+        except json.JSONDecodeError:
+            item["fix_prs"] = []
+    return item
 
 
 def _initialize_schema(connection) -> None:
@@ -565,11 +583,11 @@ def _initialize_schema(connection) -> None:
         """
         CREATE TABLE IF NOT EXISTS review_queue (
             id BIGSERIAL PRIMARY KEY,
+            workspace_id BIGINT,
             delivery_id TEXT NOT NULL,
             repository TEXT NOT NULL,
             pr_number INTEGER NOT NULL,
             head_sha TEXT NOT NULL,
-            workspace_id BIGINT,
             review_payload_json JSONB NOT NULL,
             specialist_failures_json JSONB NOT NULL DEFAULT '{}'::jsonb,
             status TEXT NOT NULL DEFAULT 'pending'
@@ -583,13 +601,17 @@ def _initialize_schema(connection) -> None:
         )
         """,
     )
+    _run(connection, "ALTER TABLE review_queue ADD COLUMN IF NOT EXISTS workspace_id BIGINT")
+    _run(
+        connection,
+        "CREATE INDEX IF NOT EXISTS idx_review_queue_workspace_status ON review_queue(workspace_id, status)",
+    )
     _run(
         connection,
         """
         CREATE TABLE IF NOT EXISTS review_outcomes (
             id BIGSERIAL PRIMARY KEY,
             delivery_id TEXT NOT NULL,
-            workspace_id BIGINT,
             repository TEXT NOT NULL,
             pr_number INTEGER NOT NULL,
             head_sha TEXT NOT NULL,
@@ -654,7 +676,6 @@ def _initialize_schema(connection) -> None:
         f"""
         CREATE TABLE IF NOT EXISTS outcome_examples (
             id BIGSERIAL PRIMARY KEY,
-            workspace_id BIGINT,
             repository TEXT NOT NULL,
             pr_number INTEGER NOT NULL,
             head_sha TEXT NOT NULL,
@@ -676,9 +697,6 @@ def _initialize_schema(connection) -> None:
         )
         """,
     )
-    _run(connection, "ALTER TABLE review_queue ADD COLUMN IF NOT EXISTS workspace_id BIGINT")
-    _run(connection, "ALTER TABLE review_outcomes ADD COLUMN IF NOT EXISTS workspace_id BIGINT")
-    _run(connection, "ALTER TABLE outcome_examples ADD COLUMN IF NOT EXISTS workspace_id BIGINT")
     _run(
         connection,
         "CREATE INDEX IF NOT EXISTS idx_outcome_examples_category "
@@ -689,7 +707,6 @@ def _initialize_schema(connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_outcome_examples_repository "
         "ON outcome_examples(repository, created_at DESC)",
     )
-    _run(connection, "CREATE INDEX IF NOT EXISTS idx_outcome_examples_workspace ON outcome_examples(workspace_id, created_at DESC)")
     _run(connection, "CREATE INDEX IF NOT EXISTS idx_review_queue_status ON review_queue(status)")
     _run(connection, "CREATE INDEX IF NOT EXISTS idx_review_queue_repository ON review_queue(repository)")
     _run(connection, "CREATE INDEX IF NOT EXISTS idx_review_queue_created_at ON review_queue(created_at)")

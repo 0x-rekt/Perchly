@@ -60,8 +60,14 @@ export function ReviewDetail({
     setError(null);
     setPreview(null);
     setFixing(null);
-    setFixLinks({});
-  }, [item.id, review]);
+    const persistedLinks: Record<string, string> = {};
+    for (const fix of item.fix_prs ?? []) {
+      if (fix.status === "created" && fix.pull_request_url) {
+        persistedLinks[fix.finding_id] = fix.pull_request_url;
+      }
+    }
+    setFixLinks(persistedLinks);
+  }, [item.id, item.fix_prs, review]);
 
   const findingFiles = useMemo(() => {
     const counts: Record<string, number> = {};

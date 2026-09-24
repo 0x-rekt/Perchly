@@ -2,6 +2,16 @@ import type { ReactNode } from "react";
 
 export type RouteKey = "queue" | "overview" | "runs";
 
+export type AuthUser = {
+  user_id: number;
+  github_id: number;
+  login: string;
+  name: string;
+  avatar_url: string | null;
+  workspace_id: number;
+};
+export type Workspace = { id: number; name: string; slug: string; role: string };
+
 export type Severity = "info" | "warning" | "critical";
 export type Finding = {
   finding_id?: string | null;
@@ -30,6 +40,12 @@ export type ReviewItem = {
     diff?: string;
   };
   specialist_failures: Record<string, string>;
+  fix_prs?: Array<{
+    finding_id: string;
+    status: "previewed" | "created" | "failed";
+    pull_request_url?: string | null;
+    branch?: string | null;
+  }>;
 };
 export type Decision = "approve" | "reject" | "edit";
 export type MetricCardProps = {
