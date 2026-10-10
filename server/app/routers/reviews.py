@@ -3,7 +3,12 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from app.schemas.reviews import EditReviewRequest, FixPullRequestRequest, ReviewDecisionRequest
+from app.schemas.reviews import (
+    EditReviewRequest,
+    FixPullRequestRequest,
+    RepositoryIndexRequest,
+    ReviewDecisionRequest,
+)
 from app.core.config import github_app_credentials
 from app.services.fix_pr import FixPatch, FixPrError, PatchFile, build_patch, create_fix_pr
 from app.services.github_api import GitHubApiError, GitHubAppClient
@@ -12,12 +17,39 @@ from app.services.auth import get_current_user
 from app.temporal.client import (
     review_workflow_id,
     send_signal_by_workflow_id,
+    start_repository_index_workflow,
 )
-from app.temporal.workflows import ReviewDecisionInput
+from app.temporal.workflows import RepositoryIndexInput, ReviewDecisionInput
 
 router = APIRouter(prefix="/reviews", tags=["reviews"])
 queue = ReviewQueueService()
 logger = logging.getLogger(__name__)
+
+
+@router.post("/repositories/index", status_code=status.HTTP_202_ACCEPTED)
+async def index_repository(
+    request: RepositoryIndexRequest,
+    user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, str]:
+    """Start a durable default-branch repository indexing run."""
+    workspace_id = _workspace_id(user)
+    from app.services.tenant_store import workspace_for_installation
+
+    linked_workspace = await workspace_for_installation(request.installation_id)
+    if linked_workspace != workspace_id:
+        raise HTTPException(status_code=403, detail="Installation is not linked to this workspace")
+    try:
+        workflow_id = await start_repository_index_workflow(
+            RepositoryIndexInput(
+                repository=request.repository,
+                installation_id=request.installation_id,
+                revision=request.revision,
+            )
+        )
+    except Exception as error:
+        logger.exception("Unable to start repository indexing repository=%s", request.repository)
+        raise HTTPException(status_code=503, detail="Repository indexing is unavailable") from error
+    return {"status": "accepted", "workflow_id": workflow_id}
 
 
 @router.get("/queue")

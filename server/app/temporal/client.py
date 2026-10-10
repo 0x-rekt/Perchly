@@ -7,6 +7,8 @@ from temporalio.client import Client, WorkflowHandle
 from temporalio.common import WorkflowIDReusePolicy
 
 from app.temporal.workflows import (
+    RepositoryIndexInput,
+    RepositoryIndexWorkflow,
     ReviewDecisionInput,
     ReviewWorkflow,
     ReviewWorkflowInput,
@@ -51,7 +53,22 @@ async def start_review_workflow(input: ReviewWorkflowInput) -> str:
         input,
         id=review_workflow_id(input),
         task_queue=os.getenv("TEMPORAL_TASK_QUEUE", "perchly-reviews"),
-        id_reuse_policy=WorkflowIDReusePolicy.REJECT_DUPLICATE,
+        # A failed review releases its idempotency claim so GitHub can retry
+        # the same PR head after configuration or installation is repaired.
+        # Temporal still rejects a duplicate while the original run is active.
+        id_reuse_policy=WorkflowIDReusePolicy.ALLOW_DUPLICATE,
+    )
+    return handle.id
+
+
+async def start_repository_index_workflow(input: RepositoryIndexInput) -> str:
+    client = await temporal_client()
+    handle = await client.start_workflow(
+        RepositoryIndexWorkflow.run,
+        input,
+        id=f"perchly-index-{input.repository}-{input.revision or 'default'}",
+        task_queue=os.getenv("TEMPORAL_TASK_QUEUE", "perchly-reviews"),
+        id_reuse_policy=WorkflowIDReusePolicy.ALLOW_DUPLICATE,
     )
     return handle.id
 

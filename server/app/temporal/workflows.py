@@ -18,6 +18,7 @@ with workflow.unsafe.imports_passed_through():
         retrieve_repository_context,
         route_aggregated_review,
         run_specialist,
+        index_repository,
     )
 
 
@@ -46,6 +47,13 @@ class ReviewWorkflowResult:
     findings_count: int
     posted: bool
     route: str
+
+
+@dataclass(frozen=True)
+class RepositoryIndexInput:
+    repository: str
+    installation_id: int
+    revision: str | None = None
 
 
 _RETRY_POLICY = RetryPolicy(maximum_attempts=3)
@@ -267,3 +275,17 @@ class ReviewWorkflow:
                 retry_policy=_RETRY_POLICY,
             )
             raise
+
+
+@workflow.defn
+class RepositoryIndexWorkflow:
+    """Durably index the current default branch for repository retrieval."""
+
+    @workflow.run
+    async def run(self, input: RepositoryIndexInput) -> dict[str, Any]:
+        return await workflow.execute_activity(
+            index_repository,
+            asdict(input),
+            start_to_close_timeout=timedelta(minutes=30),
+            retry_policy=_RETRY_POLICY,
+        )

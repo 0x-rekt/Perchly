@@ -48,7 +48,7 @@ human-reviewable PRs; Perchly ignores their webhook events to prevent recursive 
 | Docker + Docker Compose        | v2.20+ recommended                                                                                                                                                                                                                                               |
 | GitHub App                     | [Create one](https://docs.github.com/en/apps/creating-github-apps/creating-github-apps/creating-a-github-app) with `Pull requests: Read & Write`, `Contents: Read & Write`, `Checks: Read & Write`, webhooks for `pull_request` and `pull_request_review` events |
 | Gemini API key                 | [Google AI Studio](https://aistudio.google.com)                                                                                                                                                                                                                  |
-| Cloud PostgreSQL with pgvector | Any PostgreSQL provider that supports the `vector` extension; enable it for the database.                                                                                                                                                                          |
+| PostgreSQL + TimescaleDB + pgvector | Docker Compose provisions this locally; the database must have the `vector` and `timescaledb` extensions enabled.                                                                                                                        |
 | ngrok account (optional)       | For exposing the webhook endpoint locally                                                                                                                                                                                                                        |
 
 ### Steps
@@ -138,7 +138,7 @@ flowchart LR
 
     POST --> GH
 
-    CTX <-->|Retrieve relevant code| DB[(PostgreSQL + pgvector)]
+    CTX <-->|Retrieve relevant code| DB[(PostgreSQL + pgvector + TimescaleDB)]
     SEC & QUAL & TEST & DOCS -->|Traces and findings| DB
 
     APPROVE <-->|Review queue| API[FastAPI]
@@ -152,7 +152,7 @@ flowchart LR
 | Orchestration    | **Temporal** (Python SDK 1.33)                    | Durable execution; native pause/resume via signals for HITL; per-activity retries and timeouts |
 | LLM              | **Google Gemini** (`gemini-3.8-flash`)            | Structured tool-use output for typed findings; co-located embedding API                        |
 | Embeddings       | **Gemini Embedding** (`gemini-embedding-2`, 768d) | Code-aware embeddings; same API key as generation                                              |
-| Vector store     | **pgvector** on cloud-hosted PostgreSQL           | Avoids a second database; retrieval, queue, and spans share the PostgreSQL service               |
+| Vector store     | **pgvector** on local PostgreSQL + TimescaleDB    | Retrieval, queue, spans, hypertables, and aggregates share the Compose database                 |
 | Webhook / API    | **FastAPI** + uvicorn                             | Async, typed, pairs well with Temporal Python SDK                                              |
 | Worker process   | **uv** + Temporal activity worker                 | Separate process from API server; isolated failure domain                                      |
 | Frontend         | **React 19** + TypeScript + Vite + Tailwind       | SPA proxied to the API; dark terminal aesthetic                                                |
@@ -319,13 +319,13 @@ Each finding with a suggested fix exposes a **Raise Fix PR** action:
 
 The `fix_prs` table stores the preview, reviewer, status, branch, pull-request URL, and timestamps. Plain replacement suggestions become one-file unified diffs; fenced unified diffs can update multiple files.
 
-**Database protocol:** All writes use PostgreSQL's **simple-query protocol** — values are inlined as SQL literals via `_sql_literal()`. This is required because Neon's transaction-mode pooler routes pg8000's extended-protocol `Parse`/`Bind` messages to different backends, causing `SQLSTATE 26000`. Single-quote doubling is the only escaping needed (`standard_conforming_strings = on`).
+**Database protocol:** All writes use PostgreSQL's **simple-query protocol** — values are inlined as SQL literals via `_sql_literal()`. This works with both the local Compose database and transaction-pooled PostgreSQL deployments. Single-quote doubling is the only escaping needed (`standard_conforming_strings = on`).
 
 ### 3.7 Observability
 
 **File:** [`server/app/services/telemetry.py`](server/app/services/telemetry.py)
 
-Every Temporal activity emits a span via `write_span_sync()`, stored in the `agent_spans` table (TimescaleDB hypertable when the extension is available, plain table otherwise).
+Every Temporal activity emits a span via `write_span_sync()`, stored in the `agent_spans` TimescaleDB hypertable.
 
 Span fields: `review_run_id`, `repository`, `pr_number`, `head_sha`, `agent`, `phase`, `span_type` (`llm_call` / `tool_call` / `retrieval`), `model`, `tokens_in`, `tokens_out`, `cost_usd`, `latency_ms`, `input_summary`, `output_summary`, `status`, `error_message`.
 
@@ -599,7 +599,7 @@ All base tables are created **idempotently at service startup** via `initialize_
 - `server/app/services/tenant_store.py` — users, workspaces, workspace_members, github_installations, auth_sessions
 - `server/app/services/review_queue.py` — review_queue, review_outcomes, review_decisions, fix_prs, outcome_examples
 - `server/app/services/retrieval.py` — repositories, code_chunks, embeddings, review_context
-- `server/app/services/telemetry.py` — agent_spans hypertable, daily_review_metrics, phase_daily_metrics views (optional TimescaleDB)
+- `server/app/services/telemetry.py` — agent_spans hypertable, daily_review_metrics, phase_daily_metrics continuous aggregates
 
 No versioned migration system (Alembic/Prisma) is used — tables are created via `CREATE TABLE IF NOT EXISTS` on first connection. See the [ADR on schema initialization](server/docs/adr/0002-phase-1-checkpoint.md) for design rationale.
 

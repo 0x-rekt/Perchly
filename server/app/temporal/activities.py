@@ -25,10 +25,55 @@ from app.schemas.findings import assign_finding_ids
 
 
 @activity.defn
+@instrument_activity(phase="indexing")
+async def index_repository(input: dict[str, Any]) -> dict[str, Any]:
+    """Fetch and embed one default-branch repository snapshot."""
+    app_id, private_key_path = github_app_credentials()
+    github = GitHubAppClient(app_id=app_id, private_key_path=private_key_path)
+    token = await github.installation_token(input["installation_id"])
+    default_branch = await github.repository_default_branch(
+        repository=input["repository"], installation_token=token
+    )
+    requested_revision = input.get("revision") or default_branch
+    revision = await github.repository_revision_sha(
+        repository=input["repository"],
+        revision=requested_revision,
+        installation_token=token,
+    )
+    files = await github.repository_index_files(
+        repository=input["repository"],
+        revision=requested_revision,
+        installation_token=token,
+    )
+    context = ReviewContext(
+        review_run_id=activity.info().workflow_id,
+        repository=input["repository"],
+        head_sha=revision,
+        agent="indexer",
+    )
+    return await RetrievalService().index_repository(
+        repository=input["repository"],
+        revision=revision,
+        default_branch=default_branch,
+        repository_files=files,
+        telemetry_ctx=context,
+    )
+
+
+@activity.defn
 @instrument_activity(phase="fetch")
 async def fetch_review_context(input: dict[str, Any]) -> dict[str, Any]:
     """Fetch GitHub data needed by the deterministic workflow."""
     values = _workflow_input_values(input)
+    # Resolve ownership before making an installation-token request. This
+    # gives stale or unlinked installations an actionable error and avoids a
+    # needless GitHub API call for an installation the workspace cannot use.
+    workspace_id = await workspace_for_installation(values["installation_id"])
+    if workspace_id is None:
+        raise RuntimeError(
+            "GitHub App installation is not linked to a workspace; reinstall it "
+            "using the authenticated Perchly install link"
+        )
     app_id, private_key_path = github_app_credentials()
     github = GitHubAppClient(app_id=app_id, private_key_path=private_key_path)
     token = await github.installation_token(values["installation_id"])
@@ -48,15 +93,6 @@ async def fetch_review_context(input: dict[str, Any]) -> dict[str, Any]:
         pr_number=values["pr_number"],
         installation_token=token,
     )
-    # Installation ownership is the data boundary for the review queue.
-    # Older installations may not be linked yet; those reviews remain
-    # unassigned until the GitHub installation callback has completed.
-    workspace_id = await workspace_for_installation(values["installation_id"])
-    if workspace_id is None:
-        raise RuntimeError(
-            "GitHub App installation is not linked to a workspace; reinstall it "
-            "using the authenticated Perchly install link"
-        )
     return {
         **values,
         "workspace_id": workspace_id,

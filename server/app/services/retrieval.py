@@ -1,7 +1,7 @@
 import asyncio
+import ast
 import logging
 import re
-import ssl
 import time
 from decimal import Decimal
 from urllib.parse import unquote, urlparse
@@ -17,6 +17,7 @@ from app.core.config import (
     EMBEDDING_DIMENSIONS,
     GEMINI_EMBEDDING_MODEL,
     RETRIEVAL_TOP_K,
+    database_ssl_context,
     database_url,
     gemini_api_key,
 )
@@ -47,8 +48,110 @@ class CodeChunk:
     content: str
 
 
+def _bounded_chunk(path: str, lines: list[str], start: int, end: int) -> list[CodeChunk]:
+    """Return one logical chunk, splitting oversized nodes by line boundaries."""
+    chunks: list[CodeChunk] = []
+    cursor = start
+    while cursor < end:
+        next_line = cursor
+        characters = 0
+        while next_line < end and (
+            next_line == cursor or characters + len(lines[next_line]) + 1 <= _MAX_CHUNK_CHARACTERS
+        ):
+            characters += len(lines[next_line]) + 1
+            next_line += 1
+        chunks.append(
+            CodeChunk(
+                path=path,
+                line_start=cursor + 1,
+                line_end=next_line,
+                content="\n".join(lines[cursor:next_line]),
+            )
+        )
+        cursor = next_line
+    return chunks
+
+
+def _python_chunks(path: str, content: str) -> list[CodeChunk] | None:
+    """Chunk Python by top-level definitions, preserving source line ranges."""
+    try:
+        tree = ast.parse(content, filename=path)
+    except SyntaxError:
+        return None
+    lines = content.splitlines()
+    if not lines:
+        return []
+    nodes = [
+        node for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+        and hasattr(node, "lineno")
+        and hasattr(node, "end_lineno")
+    ]
+    chunks: list[CodeChunk] = []
+    cursor = 0
+    for node in nodes:
+        start = max(cursor, node.lineno - 1)
+        end = min(len(lines), node.end_lineno or node.lineno)
+        if start > cursor:
+            chunks.extend(_bounded_chunk(path, lines, cursor, start))
+        chunks.extend(_bounded_chunk(path, lines, start, end))
+        cursor = end
+    if cursor < len(lines):
+        chunks.extend(_bounded_chunk(path, lines, cursor, len(lines)))
+    return [chunk for chunk in chunks if chunk.content.strip()]
+
+
+_STRUCTURAL_START = re.compile(
+    r"^\s*(?:(?:export\s+)?(?:default\s+)?(?:async\s+)?function\b|"
+    r"(?:export\s+)?(?:abstract\s+)?class\b|"
+    r"(?:export\s+)?interface\b|(?:export\s+)?type\b|"
+    r"(?:export\s+)?const\s+\w+\s*=\s*(?:async\s*)?(?:\([^)]*\)|\w+)\s*=>)"
+)
+
+
+def _javascript_chunks(path: str, content: str) -> list[CodeChunk] | None:
+    """Chunk JS/TS declarations with a brace-aware structural fallback."""
+    lines = content.splitlines()
+    if not lines:
+        return []
+    starts = [index for index, line in enumerate(lines) if _STRUCTURAL_START.match(line)]
+    if not starts:
+        return None
+    chunks: list[CodeChunk] = []
+    cursor = 0
+    for start in starts:
+        if start < cursor:
+            continue
+        if start > cursor:
+            chunks.extend(_bounded_chunk(path, lines, cursor, start))
+        depth = 0
+        seen_brace = False
+        end = start + 1
+        for index in range(start, len(lines)):
+            line = re.sub(r"(['\"]).*?\1", "", lines[index])
+            depth += line.count("{") - line.count("}")
+            seen_brace = seen_brace or "{" in line
+            end = index + 1
+            if seen_brace and depth <= 0:
+                break
+        chunks.extend(_bounded_chunk(path, lines, start, end))
+        cursor = end
+    if cursor < len(lines):
+        chunks.extend(_bounded_chunk(path, lines, cursor, len(lines)))
+    return [chunk for chunk in chunks if chunk.content.strip()]
+
+
 def chunk_file_content(path: str, content: str) -> list[CodeChunk]:
-    """Split a full repository file into bounded, line-addressable chunks."""
+    """Use structural chunks for supported languages and bounded line chunks otherwise."""
+    suffix = path.rsplit(".", 1)[-1].lower() if "." in path else ""
+    if suffix == "py":
+        structured = _python_chunks(path, content)
+        if structured is not None:
+            return structured
+    if suffix in {"js", "jsx", "ts", "tsx"}:
+        structured = _javascript_chunks(path, content)
+        if structured is not None:
+            return structured
     lines = content.splitlines()
     chunks: list[CodeChunk] = []
     start = 0
@@ -132,7 +235,7 @@ def chunk_changed_files(diff: str) -> list[CodeChunk]:
 
 
 class RetrievalService:
-    """Persist changed code in cloud PostgreSQL and retrieve category-specific context."""
+    """Persist changed code in PostgreSQL and retrieve category-specific context."""
 
     async def build_contexts(
         self,
@@ -156,6 +259,32 @@ class RetrievalService:
             self._build_contexts,
             repository=repository,
             head_sha=head_sha,
+            chunks=chunks,
+            telemetry_ctx=telemetry_ctx,
+        )
+
+    async def index_repository(
+        self,
+        *,
+        repository: str,
+        revision: str,
+        default_branch: str,
+        repository_files: list[RepositoryFile],
+        telemetry_ctx: ReviewContext | None = None,
+    ) -> dict[str, int | str]:
+        """Index a repository snapshot and make it the current searchable version."""
+        chunks = [
+            chunk
+            for repository_file in repository_files
+            for chunk in chunk_file_content(repository_file.path, repository_file.content)
+        ]
+        if not chunks:
+            return {"repository": repository, "revision": revision, "chunks": 0}
+        return await asyncio.to_thread(
+            self._index_repository,
+            repository=repository,
+            revision=revision,
+            default_branch=default_branch,
             chunks=chunks,
             telemetry_ctx=telemetry_ctx,
         )
@@ -199,10 +328,6 @@ class RetrievalService:
         client = genai.Client(api_key=gemini_api_key())
         embeddings = _embed(client, [chunk.content for chunk in chunks], telemetry_ctx=telemetry_ctx)
 
-        # Neon transaction-pooler sessions can recycle an unnamed prepared
-        # statement between commands (SQLSTATE 26000). A fresh connection is
-        # required; allow a few attempts because the pooler can hand out more
-        # than one stale backend in succession.
         for attempt in range(3):
             connection = _connect()
             try:
@@ -215,6 +340,8 @@ class RetrievalService:
                     head_sha=head_sha,
                     chunks=chunks,
                     embeddings=embeddings,
+                    is_current=False,
+                    branch=None,
                 )
                 contexts: dict[FindingCategory, str] = {}
                 for category, query in SPECIALIST_QUERIES.items():
@@ -241,6 +368,45 @@ class RetrievalService:
                 connection.close()
         return {}  # unreachable
 
+    def _index_repository(
+        self,
+        *,
+        repository: str,
+        revision: str,
+        default_branch: str,
+        chunks: list[CodeChunk],
+        telemetry_ctx: ReviewContext | None = None,
+    ) -> dict[str, int | str]:
+        from pgvector.pg8000 import register_vector
+
+        client = genai.Client(api_key=gemini_api_key())
+        embeddings = _embed(client, [chunk.content for chunk in chunks], telemetry_ctx=telemetry_ctx)
+        connection = _connect()
+        try:
+            register_vector(connection)
+            _initialize_schema(connection)
+            repository_id = _upsert_repository(
+                connection, repository, default_branch=default_branch, indexed_sha=revision
+            )
+            _run(
+                connection,
+                "UPDATE code_chunks SET is_current = FALSE WHERE repository_id = %s",
+                (repository_id,),
+            )
+            stored = _store_chunks(
+                connection,
+                repository_id=repository_id,
+                head_sha=revision,
+                chunks=chunks,
+                embeddings=embeddings,
+                is_current=True,
+                branch=default_branch,
+            )
+            _run(connection, "COMMIT")
+            return {"repository": repository, "revision": revision, "chunks": len(stored)}
+        finally:
+            connection.close()
+
 
 def _connect():
     from pg8000.native import Connection
@@ -252,12 +418,12 @@ def _connect():
         host=parsed.hostname,
         port=parsed.port or 5432,
         database=parsed.path.lstrip("/"),
-        ssl_context=ssl.create_default_context(),
+        ssl_context=database_ssl_context(),
         timeout=10,
     )
 
 
-# SQLSTATEs produced when Neon's transaction-mode pooler recycles a session
+# SQLSTATEs produced when a transaction-mode pooler recycles a session
 # (dropping pg8000's extended-protocol prepared statements mid-activity):
 # class 08 = connection exception, 26000 = prepared statement gone.
 _STALE_SQLSTATES = frozenset(
@@ -387,10 +553,16 @@ def _initialize_schema(connection) -> None:
         CREATE TABLE IF NOT EXISTS repositories (
             id BIGSERIAL PRIMARY KEY,
             full_name TEXT NOT NULL UNIQUE,
+            default_branch TEXT,
+            indexed_sha TEXT,
+            indexed_at TIMESTAMPTZ,
             created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
         )
         """
     )
+    _run(connection, "ALTER TABLE repositories ADD COLUMN IF NOT EXISTS default_branch TEXT")
+    _run(connection, "ALTER TABLE repositories ADD COLUMN IF NOT EXISTS indexed_sha TEXT")
+    _run(connection, "ALTER TABLE repositories ADD COLUMN IF NOT EXISTS indexed_at TIMESTAMPTZ")
     _run(connection,
         f"""
         CREATE TABLE IF NOT EXISTS code_chunks (
@@ -402,11 +574,15 @@ def _initialize_schema(connection) -> None:
             line_end INTEGER NOT NULL,
             content TEXT NOT NULL,
             embedding_model TEXT NOT NULL,
+            branch TEXT,
+            is_current BOOLEAN NOT NULL DEFAULT FALSE,
             created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(repository_id, head_sha, path, line_start, line_end)
         )
         """,
     )
+    _run(connection, "ALTER TABLE code_chunks ADD COLUMN IF NOT EXISTS branch TEXT")
+    _run(connection, "ALTER TABLE code_chunks ADD COLUMN IF NOT EXISTS is_current BOOLEAN NOT NULL DEFAULT FALSE")
     _run(connection, "ALTER TABLE code_chunks DROP COLUMN IF EXISTS embedding")
     _run(connection,
         f"""
@@ -432,31 +608,61 @@ def _initialize_schema(connection) -> None:
         )
         """
     )
+    _run(
+        connection,
+        """
+        CREATE INDEX IF NOT EXISTS idx_embeddings_vector_hnsw
+        ON embeddings USING hnsw (vector vector_cosine_ops)
+        """,
+    )
 
 
-def _upsert_repository(connection, full_name: str) -> int:
+def _upsert_repository(
+    connection,
+    full_name: str,
+    *,
+    default_branch: str | None = None,
+    indexed_sha: str | None = None,
+) -> int:
     row = _run(connection,
         """
-        INSERT INTO repositories (full_name) VALUES (%s)
-        ON CONFLICT (full_name) DO UPDATE SET full_name = EXCLUDED.full_name
+        INSERT INTO repositories (full_name, default_branch, indexed_sha, indexed_at)
+        VALUES (%s, %s, %s, CASE WHEN %s IS NULL THEN NULL ELSE CURRENT_TIMESTAMP END)
+        ON CONFLICT (full_name) DO UPDATE SET
+            default_branch = COALESCE(EXCLUDED.default_branch, repositories.default_branch),
+            indexed_sha = COALESCE(EXCLUDED.indexed_sha, repositories.indexed_sha),
+            indexed_at = CASE WHEN EXCLUDED.indexed_sha IS NULL
+                              THEN repositories.indexed_at ELSE CURRENT_TIMESTAMP END
         RETURNING id
         """,
-        (full_name,),
+        (full_name, default_branch, indexed_sha, indexed_sha),
     )[0]
     return int(row[0])
 
 
-def _store_chunks(connection, *, repository_id: int, head_sha: str, chunks: list[CodeChunk], embeddings: list[list[float]]) -> list[int]:
+def _store_chunks(
+    connection,
+    *,
+    repository_id: int,
+    head_sha: str,
+    chunks: list[CodeChunk],
+    embeddings: list[list[float]],
+    is_current: bool,
+    branch: str | None,
+) -> list[int]:
     chunk_ids: list[int] = []
     for chunk, embedding in zip(chunks, embeddings, strict=True):
         row = _run(connection,
             """
             INSERT INTO code_chunks
-                (repository_id, head_sha, path, line_start, line_end, content, embedding_model)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+                (repository_id, head_sha, path, line_start, line_end, content,
+                 embedding_model, branch, is_current)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (repository_id, head_sha, path, line_start, line_end)
             DO UPDATE SET content = EXCLUDED.content,
-                          embedding_model = EXCLUDED.embedding_model
+                          embedding_model = EXCLUDED.embedding_model,
+                          branch = EXCLUDED.branch,
+                          is_current = EXCLUDED.is_current
             RETURNING id
             """,
             (
@@ -467,6 +673,8 @@ def _store_chunks(connection, *, repository_id: int, head_sha: str, chunks: list
                 chunk.line_end,
                 chunk.content,
                 GEMINI_EMBEDDING_MODEL,
+                branch,
+                is_current,
             ),
         )[0]
         chunk_id = int(row[0])
@@ -500,10 +708,29 @@ def _retrieve_category_context(
         FROM code_chunks
          JOIN embeddings ON embeddings.chunk_id = code_chunks.id
         WHERE repository_id = %s
+          AND (
+              code_chunks.head_sha = %s
+              OR (
+                  code_chunks.is_current = TRUE
+                  AND NOT EXISTS (
+                      SELECT 1 FROM code_chunks exact_chunks
+                      WHERE exact_chunks.repository_id = %s
+                        AND exact_chunks.head_sha = %s
+                  )
+              )
+          )
          ORDER BY embeddings.vector <=> %s
         LIMIT %s
         """,
-        (query_embedding, repository_id, query_embedding, RETRIEVAL_TOP_K),
+        (
+            query_embedding,
+            repository_id,
+            head_sha,
+            repository_id,
+            head_sha,
+            query_embedding,
+            RETRIEVAL_TOP_K,
+        ),
     )
     parts: list[str] = []
     for rank, row in enumerate(rows, start=1):

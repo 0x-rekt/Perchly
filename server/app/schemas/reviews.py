@@ -21,3 +21,9 @@ class EditReviewRequest(ReviewDecisionRequest):
 
 class FixPullRequestRequest(BaseModel):
     reviewer: str | None = Field(default=None, min_length=1)
+
+
+class RepositoryIndexRequest(BaseModel):
+    repository: str = Field(min_length=3, pattern=r"^[^/\s]+/[^/\s]+$")
+    installation_id: int = Field(gt=0)
+    revision: str | None = Field(default=None, min_length=1)

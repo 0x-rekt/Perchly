@@ -19,7 +19,7 @@ GITHUB_WEBHOOK_SECRET=your-webhook-secret
 GITHUB_PRIVATE_KEY_PATH=./your-github-app-private-key.pem
 GITHUB_APP_INSTALL_URL=https://github.com/apps/perchly/installations/new
 GEMINI_API_KEY=your-gemini-api-key
-DATABASE_URL=postgresql://user:password@host/dbname?sslmode=require
+DATABASE_URL=postgresql://perchly:perchly@localhost:5432/perchly
 # Optional retrieval settings
 GEMINI_EMBEDDING_MODEL=gemini-embedding-2
 EMBEDDING_DIMENSIONS=768
@@ -45,24 +45,41 @@ failures, and low-confidence reviews go to the approval queue. Approve/edit
 resumes the durable workflow and posts the selected review to GitHub.
 
 The retrieval layer creates the `repositories`, `code_chunks`, `embeddings`, and
-`review_context` tables in cloud PostgreSQL on the first review. Each review fetches full text
+`review_context` tables in PostgreSQL on the first review. Each review fetches full text
 for changed files, chunks bounded relative-import dependencies when available, and
 retrieves across the repository's stored chunks. Retrieval is incremental: the MVP
 does not clone or index the entire repository up front. A repository's searchable
 context grows as PRs are reviewed, so unvisited files are not available until they
-are fetched through a reviewed PR or another indexing workflow. The cloud PostgreSQL project
-must have the `vector` extension enabled. Historical chunks from previous PR head
+are fetched through a reviewed PR or another indexing workflow. The Docker Compose database
+includes the `vector` and `timescaledb` extensions. Historical chunks from previous PR head
 SHAs remain searchable for now; this preserves useful context but can leave stale
 duplicate versions that rank highly. A later cleanup or version-selection policy is
 needed before treating the index as a long-lived repository source of truth.
 
-Reviews routed to `NEEDS_APPROVAL` are persisted in cloud PostgreSQL tables
+Reviews routed to `NEEDS_APPROVAL` are persisted in PostgreSQL tables
 `review_queue` and `review_decisions`. Queue payloads retain the aggregated findings,
 specialist failures, PR metadata, diff, repository files, and retrieved contexts so
 approval can reconstruct the review without rerunning Gemini.
 Approval-required Temporal workflows wait durably for one of the `approve_review`,
 `reject_review`, or `edit_review` signals. Approved and edited reviews are posted
 after the signal; rejected reviews are recorded without posting.
+
+### Repository indexing
+
+The authenticated indexing endpoint starts a durable Temporal run that fetches
+the selected repository revision, chunks supported Python/JavaScript/TypeScript
+definitions structurally, embeds the snapshot, and marks it as the current
+default-branch context:
+
+```text
+POST /reviews/repositories/index
+{ "repository": "owner/repo", "installation_id": 12345 }
+```
+
+Pass `revision` to index a specific branch or commit. Review retrieval uses
+exact PR-head chunks first and falls back to the latest indexed repository
+snapshot. Older snapshots remain available for auditability but are excluded
+from fallback retrieval once a newer snapshot is marked current.
 
 Start GitHub App installation from the authenticated Perchly console. The
 backend adds a short-lived signed workspace state to `GITHUB_APP_INSTALL_URL`;

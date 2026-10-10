@@ -5,7 +5,7 @@ from temporalio.client import Client
 from temporalio.worker import Worker
 
 from app.temporal import activities
-from app.temporal.workflows import ReviewWorkflow
+from app.temporal.workflows import RepositoryIndexWorkflow, ReviewWorkflow
 
 
 async def run_worker() -> None:
@@ -14,7 +14,7 @@ async def run_worker() -> None:
     async with Worker(
         client,
         task_queue=os.getenv("TEMPORAL_TASK_QUEUE", "perchly-reviews"),
-        workflows=[ReviewWorkflow],
+        workflows=[ReviewWorkflow, RepositoryIndexWorkflow],
         activities=[
             activities.fetch_review_context,
             activities.retrieve_repository_context,
@@ -26,6 +26,7 @@ async def run_worker() -> None:
             activities.validate_edited_review,
             activities.post_review,
             activities.release_review_claim,
+            activities.index_repository,
         ],
     ):
         await asyncio.Future()

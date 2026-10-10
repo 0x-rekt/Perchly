@@ -5,7 +5,6 @@ import functools
 import logging
 import os
 import re
-import ssl
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -20,7 +19,7 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import ConsoleSpanExporter, SimpleSpanProcessor
 from opentelemetry.trace import Status, StatusCode
 
-from app.core.config import OTEL_EXPORTER_OTLP_ENDPOINT, database_url
+from app.core.config import OTEL_EXPORTER_OTLP_ENDPOINT, database_ssl_context, database_url
 from pg8000.exceptions import DatabaseError as PGDatabaseError
 from pg8000.exceptions import InterfaceError as PGInterfaceError
 
@@ -53,8 +52,6 @@ def _build_tracer() -> trace.Tracer:
     try:
         trace.set_tracer_provider(provider)
     except Exception:
-        # Test reloaders and embedded workers may initialize the global provider
-        # more than once. Reuse the SDK's already-installed provider in that case.
         pass
     return trace.get_tracer("perchly")
 
@@ -618,7 +615,7 @@ def _trace_summary(row: list[Any]) -> dict[str, Any]:
 
 
 def refresh_aggregates() -> None:
-    """Refresh the Timescale aggregate or PostgreSQL materialized-view fallback."""
+    """Refresh the Timescale continuous aggregates."""
 
     def operation(conn) -> None:
         for view in ("daily_review_metrics", "phase_daily_metrics"):
@@ -823,7 +820,7 @@ def initialize_schema() -> None:
     """Idempotently apply the telemetry schema.
 
     Drops stale tables from earlier incorrect schemas, then creates the
-    canonical agent_spans hypertable and daily_review_metrics view.
+    canonical agent_spans hypertable and continuous aggregates.
     """
 
     def operation(conn) -> None:
@@ -867,9 +864,11 @@ def _ensure_timescaledb(conn) -> bool:
     try:
         _run(conn, "CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE")
         return True
-    except Exception:
-        logger.warning("timescaledb unavailable; agent_spans will remain a plain table")
-        return False
+    except Exception as error:
+        raise RuntimeError(
+            "TimescaleDB is required. Start the local database with docker compose "
+            "or install the timescaledb extension in DATABASE_URL's PostgreSQL database."
+        ) from error
 
 
 def _create_agent_spans(conn) -> None:
@@ -908,8 +907,8 @@ def _create_hypertable(conn) -> None:
             conn,
             "SELECT create_hypertable('agent_spans', 'created_at', if_not_exists => TRUE)",
         )
-    except Exception:
-        logger.warning("could not create hypertable; agent_spans remains a plain table")
+    except Exception as error:
+        raise RuntimeError("Could not create the agent_spans TimescaleDB hypertable") from error
 
 
 def _create_indexes(conn) -> None:
@@ -952,15 +951,12 @@ def _create_daily_metrics_view(conn, *, timescaledb_available: bool) -> bool:
             WITH NO DATA
             """,
         )
-    except Exception:
-        if not timescaledb_available:
-            raise
-        logger.warning("Timescale continuous aggregate unavailable; using PostgreSQL materialized view")
+    except Exception as error:
         _rollback_after_schema_error(conn)
-        return _create_daily_metrics_view(conn, timescaledb_available=False)
+        raise RuntimeError("Could not create the daily_review_metrics continuous aggregate") from error
     _run(
         conn,
-        "CREATE UNIQUE INDEX IF NOT EXISTS idx_daily_metrics_pk "
+        "CREATE INDEX IF NOT EXISTS idx_daily_metrics_lookup "
         "ON daily_review_metrics (day, repository)",
     )
     return timescaledb_available
@@ -993,15 +989,12 @@ def _create_phase_metrics_view(conn, *, timescaledb_available: bool) -> bool:
             WITH NO DATA
             """,
         )
-    except Exception:
-        if not timescaledb_available:
-            raise
-        logger.warning("Timescale phase aggregate unavailable; using PostgreSQL materialized view")
+    except Exception as error:
         _rollback_after_schema_error(conn)
-        return _create_phase_metrics_view(conn, timescaledb_available=False)
+        raise RuntimeError("Could not create the phase_daily_metrics continuous aggregate") from error
     _run(
         conn,
-        "CREATE UNIQUE INDEX IF NOT EXISTS idx_phase_daily_metrics_pk "
+        "CREATE INDEX IF NOT EXISTS idx_phase_daily_metrics_lookup "
         "ON phase_daily_metrics (day, phase)",
     )
     return timescaledb_available
@@ -1030,7 +1023,7 @@ def _connect(*, timeout: int = 10):
         host=parsed.hostname,
         port=parsed.port or 5432,
         database=parsed.path.lstrip("/"),
-        ssl_context=ssl.create_default_context(),
+        ssl_context=database_ssl_context(),
         timeout=timeout,
     )
 
@@ -1052,7 +1045,7 @@ def _is_stale_session(exc: BaseException) -> bool:
 def _execute(operation: Callable[[Any], Any], *, timeout: int = 10) -> Any:
     """Run one DB operation, retrying with fresh connections.
 
-    Every operation uses its own short-lived connection, so the Neon
+    Every operation uses its own short-lived connection, so a transaction pooler
     transaction-mode pooler recycling a session (which drops pg8000's
     extended-protocol prepared statements, SQLSTATE 26000) is always
     recovered simply by connecting again.
@@ -1103,7 +1096,7 @@ def _sql_literal(value: Any) -> str:
 def _run(conn, query: str, parameters: tuple[Any, ...] = ()) -> list[list[Any]]:
     """Execute with PostgreSQL's simple-query protocol.
 
-    The cloud database uses transaction pooling, which can route pg8000's
+    Some PostgreSQL deployments use transaction pooling, which can route pg8000's
     extended-protocol Parse/Describe/Bind messages to different backends and
     produces SQLSTATE 26000. Values are encoded as strict SQL literals so the
     simple protocol remains safe while avoiding unnamed prepared statements.

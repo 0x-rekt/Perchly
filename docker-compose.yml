@@ -1,4 +1,22 @@
 services:
+  db:
+    image: timescale/timescaledb:latest-pg17
+    container_name: perchly-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-perchly}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-perchly}
+      POSTGRES_DB: ${POSTGRES_DB:-perchly}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - perchly-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
   temporal:
     image: temporalio/temporal:latest
     container_name: perchly-temporal
@@ -24,13 +42,17 @@ services:
         required: false
     environment:
       - TEMPORAL_ADDRESS=temporal:7233
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-perchly}:${POSTGRES_PASSWORD:-perchly}@db:5432/${POSTGRES_DB:-perchly}?sslmode=disable
       - GITHUB_PRIVATE_KEY_PATH=/app/perchly.2026-09-12.private-key.pem
       - PERCHLY_DATA_DIRECTORY=/app/data
     volumes:
       - ./server/data:/app/data
       - ./server/perchly.2026-09-12.private-key.pem:/app/perchly.2026-09-12.private-key.pem:ro
     depends_on:
-      - temporal
+      temporal:
+        condition: service_started
+      db:
+        condition: service_healthy
 
   worker:
     build:
@@ -46,14 +68,19 @@ services:
         required: false
     environment:
       - TEMPORAL_ADDRESS=temporal:7233
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-perchly}:${POSTGRES_PASSWORD:-perchly}@db:5432/${POSTGRES_DB:-perchly}?sslmode=disable
       - GITHUB_PRIVATE_KEY_PATH=/app/perchly.2026-09-12.private-key.pem
       - PERCHLY_DATA_DIRECTORY=/app/data
     volumes:
       - ./server/data:/app/data
       - ./server/perchly.2026-09-12.private-key.pem:/app/perchly.2026-09-12.private-key.pem:ro
     depends_on:
-      - temporal
-      - server
+      temporal:
+        condition: service_started
+      server:
+        condition: service_started
+      db:
+        condition: service_healthy
 
   web:
     build:
@@ -81,3 +108,6 @@ services:
         required: false
     depends_on:
       - server
+
+volumes:
+  perchly-postgres:

@@ -137,6 +137,75 @@ class GitHubAppClient:
             raise GitHubApiError("GitHub pull-request response did not contain a title")
         return title, body if isinstance(body, str) else None
 
+    async def repository_default_branch(
+        self, *, repository: str, installation_token: str
+    ) -> str:
+        response = await self._request(
+            "GET", f"/repos/{repository}", token=installation_token
+        )
+        value = response.json().get("default_branch")
+        if not isinstance(value, str) or not value:
+            raise GitHubApiError("GitHub repository response did not contain default_branch")
+        return value
+
+    async def repository_revision_sha(
+        self, *, repository: str, revision: str, installation_token: str
+    ) -> str:
+        response = await self._request(
+            "GET",
+            f"/repos/{repository}/commits/{quote(revision, safe='')}",
+            token=installation_token,
+        )
+        value = response.json().get("sha")
+        if not isinstance(value, str) or not value:
+            raise GitHubApiError("GitHub commit response did not contain sha")
+        return value
+
+    async def repository_index_files(
+        self,
+        *,
+        repository: str,
+        revision: str,
+        installation_token: str,
+        max_files: int = 50_000,
+    ) -> list[RepositoryFile]:
+        """Fetch text source files from one repository tree revision."""
+        response = await self._request(
+            "GET",
+            f"/repos/{repository}/git/trees/{quote(revision, safe='')}?recursive=1",
+            token=installation_token,
+        )
+        payload = response.json()
+        tree = payload.get("tree") if isinstance(payload, dict) else None
+        if not isinstance(tree, list):
+            raise GitHubApiError("GitHub tree response did not contain a tree")
+        paths = [
+            item.get("path")
+            for item in tree
+            if isinstance(item, dict)
+            and item.get("type") == "blob"
+            and isinstance(item.get("path"), str)
+            and _is_indexable_path(item["path"])
+        ]
+        if len(paths) > max_files:
+            raise GitHubApiError(
+                f"Repository contains {len(paths)} indexable files; limit is {max_files}"
+            )
+        files: list[RepositoryFile] = []
+        for path in paths:
+            try:
+                content = await self.repository_file_content(
+                    repository=repository,
+                    path=path,
+                    revision=revision,
+                    installation_token=installation_token,
+                )
+            except GitHubApiError:
+                continue
+            if content is not None:
+                files.append(RepositoryFile(path=path, content=content))
+        return files
+
     async def pull_request_repository_context(
         self,
         *,
@@ -395,6 +464,23 @@ class GitHubAppClient:
 def review_comment_marker(*, repository: str, pr_number: int, head_sha: str) -> str:
     """Return the stable marker used to make one review idempotent."""
     return f"<!-- perchly-review:{repository}:{pr_number}:{head_sha} -->"
+
+
+_INDEXABLE_EXTENSIONS = frozenset(
+    {
+        ".py", ".js", ".jsx", ".ts", ".tsx", ".java", ".go", ".rs", ".rb",
+        ".php", ".cs", ".cpp", ".c", ".h", ".hpp", ".swift", ".kt", ".kts",
+        ".md", ".mdx", ".json", ".yaml", ".yml", ".toml", ".ini", ".cfg",
+    }
+)
+_IGNORED_PATH_PARTS = frozenset({".git", "node_modules", "dist", "build", ".venv", "vendor"})
+
+
+def _is_indexable_path(path: str) -> bool:
+    parts = set(path.split("/"))
+    if parts & _IGNORED_PATH_PARTS:
+        return False
+    return posixpath.splitext(path)[1].lower() in _INDEXABLE_EXTENSIONS
 
 
 def _repository_import_candidates(source_path: str, reference: str) -> list[str]:

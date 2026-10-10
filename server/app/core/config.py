@@ -1,5 +1,7 @@
 import os
+import ssl
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 from dotenv import load_dotenv
 
@@ -54,10 +56,18 @@ def gemini_api_key() -> str:
 
 
 def database_url() -> str:
-    """Return the cloud PostgreSQL connection string without exposing it in logs."""
+    """Return the PostgreSQL connection string without exposing it in logs."""
     if not DATABASE_URL:
         raise RuntimeError("DATABASE_URL must be configured")
     return DATABASE_URL
+
+
+def database_ssl_context() -> ssl.SSLContext | None:
+    """Return the TLS context requested by DATABASE_URL."""
+    sslmode = parse_qs(urlparse(database_url()).query).get("sslmode", ["require"])[0]
+    if sslmode.lower() in {"disable", "off"}:
+        return None
+    return ssl.create_default_context()
 
 
 def session_secret() -> str:

@@ -2,7 +2,6 @@ import asyncio
 import json
 import logging
 import re
-import ssl
 import time
 from datetime import date, datetime
 from decimal import Decimal
@@ -13,14 +12,14 @@ from pg8000.exceptions import DatabaseError as PGDatabaseError
 from pg8000.exceptions import InterfaceError as PGInterfaceError
 from pgvector import Vector
 
-from app.core.config import EMBEDDING_DIMENSIONS, database_url
+from app.core.config import EMBEDDING_DIMENSIONS, database_ssl_context, database_url
 from app.schemas.findings import Finding, assign_finding_ids
 
 _LOG = logging.getLogger(__name__)
 
 
 class ReviewQueueService:
-    """Persist human-review queue items and decisions in cloud PostgreSQL."""
+    """Persist human-review queue items and decisions in PostgreSQL."""
 
     async def enqueue(
         self,
@@ -472,7 +471,7 @@ _SELECT_ITEM_SQL = """
 """
 
 # SQLSTATEs that indicate the session was dropped or reset beneath us (most
-# commonly Neon's transaction-mode pooler recycling a connection, which breaks
+# commonly transaction-mode poolers recycling a connection, which breaks
 # pg8000's extended-protocol prepared statements). Class 08 = connection
 # exception, 57P01/57P02 = admin shutdown / crash, 26000 = prepared statement
 # gone. A single reconnect clears these because every operation opens a fresh
@@ -499,9 +498,6 @@ def _execute(operation: Callable[[Any], Any]) -> Any:
     failed is never duplicated: the first attempt either never executed on the
     server (prepared-statement desync) or raised a connection-level error.
     """
-    # A transaction-pooler can hand out more than one backend with reset
-    # unnamed-statement state while it is recycling connections. Retry a few
-    # fresh sessions before surfacing a genuine database failure.
     for attempt in range(3):
         connection = _connect()
         try:
@@ -516,14 +512,11 @@ def _execute(operation: Callable[[Any], Any]) -> Any:
             )
             time.sleep(0.1 * (attempt + 1))
         finally:
-            # A transaction pooler can close the underlying socket after the
-            # operation has committed. Cleanup must not mask that successful
-            # result (or hide the original database exception).
             try:
                 connection.close()
             except Exception:
                 _LOG.debug("Ignoring stale database connection during cleanup", exc_info=True)
-    return None  # unreachable
+    return None
 
 
 def _connect():
@@ -536,14 +529,12 @@ def _connect():
         host=parsed.hostname,
         port=parsed.port or 5432,
         database=parsed.path.lstrip("/"),
-        ssl_context=ssl.create_default_context(),
+        ssl_context=database_ssl_context(),
         timeout=10,
     )
 
 
 def _queue_item(row: list[Any]) -> dict[str, Any]:
-    # Rows supplied by older callers/tests predate workspace_id. Database
-    # reads use the new SELECT shape, but accept the old shape during rollout.
     if len(row) <= 13:
         legacy_fields = (
             "id", "delivery_id", "repository", "pr_number", "head_sha",
@@ -717,7 +708,7 @@ def _initialize_schema(connection) -> None:
 def _run(connection, query: str, parameters: tuple[Any, ...] = ()) -> list[list[Any]]:
     """Execute with PostgreSQL's simple-query protocol.
 
-    The cloud database uses transaction pooling, which can route pg8000's
+    Some PostgreSQL deployments use transaction pooling, which can route pg8000's
     extended-protocol Parse/Describe/Bind messages to different backends and
     produces SQLSTATE 26000. Values are encoded as strict SQL literals so the
     simple protocol remains safe while avoiding unnamed prepared statements.
