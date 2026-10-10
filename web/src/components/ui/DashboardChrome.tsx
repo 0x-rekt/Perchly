@@ -232,7 +232,7 @@ export function PageHeading({
   aside?: ReactNode;
 }) {
   return (
-    <div className="mb-7 flex items-end justify-between gap-6 max-[900px]:flex-col max-[900px]:items-start max-[900px]:gap-3">
+    <div data-reveal="left" className="mb-7 flex items-end justify-between gap-6 max-[900px]:flex-col max-[900px]:items-start max-[900px]:gap-3">
       <div>
         <h2 className="text-[32px] font-extrabold leading-[1.12] tracking-[-0.035em] text-ink max-[900px]:text-[26px] max-[520px]:text-[24px]">
           {title}
@@ -286,6 +286,7 @@ export function Metric({
 }: MetricCardProps) {
   return (
     <div
+      data-reveal="scale"
       className={`relative flex min-h-[122px] gap-3.5 overflow-hidden rounded-lg border border-line bg-[linear-gradient(160deg,#151b18,#101411)] p-[17px] ${ACCENT[accent] ?? ACCENT.lime}`}
     >
       <div className="mt-px">{icon}</div>

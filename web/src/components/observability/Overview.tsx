@@ -74,7 +74,7 @@ export function Overview({
           description="Volume, cost, latency, and acceptance across the last 14 days."
           aside={aside}
         />
-        <div className="mb-[30px] grid grid-cols-4 gap-2.5 max-[1020px]:grid-cols-2">
+        <div data-reveal-group className="mb-[30px] grid grid-cols-4 gap-2.5 max-[1020px]:grid-cols-2">
           {Array.from({ length: 4 }, (_, index) => (
             <div
               className="min-h-[122px] animate-pulse rounded-lg border border-line bg-panel-2 motion-reduce:animate-none"
@@ -113,7 +113,7 @@ export function Overview({
         description="Volume, cost, latency, and acceptance across the last 14 days."
         aside={aside}
       />
-      <div className="mb-[30px] grid grid-cols-4 gap-2.5 max-[1020px]:grid-cols-2">
+      <div data-reveal-group className="mb-[30px] grid grid-cols-4 gap-2.5 max-[1020px]:grid-cols-2">
         <Metric
           icon={<GitPullRequest size={16} />}
           label="Reviews in window"

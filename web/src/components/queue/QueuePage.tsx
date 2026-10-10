@@ -94,7 +94,7 @@ export function QueuePage({
         description="Resolve low-confidence findings before they reach GitHub."
         aside={aside}
       />
-      <div className="mb-[30px] grid grid-cols-4 gap-2.5 max-[1020px]:grid-cols-2">
+      <div data-reveal-group className="mb-[30px] grid grid-cols-4 gap-2.5 max-[1020px]:grid-cols-2">
         <Metric
           icon={<Inbox size={16} />}
           label="Awaiting review"

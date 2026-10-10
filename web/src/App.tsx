@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import type { CSSProperties } from "react";
 import {
   BrowserRouter,
   Link,
@@ -77,6 +78,52 @@ export default function App() {
   );
 }
 
+function useKineticReveals(scope: string) {
+  useEffect(() => {
+    const nodes = Array.from(
+      document.querySelectorAll<HTMLElement>("[data-reveal]"),
+    );
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      nodes.forEach((node) => node.classList.add("in-view"));
+      return;
+    }
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) {
+            entry.target.classList.add("in-view");
+            observer.unobserve(entry.target);
+          }
+        });
+      },
+      { threshold: 0.12, rootMargin: "0px 0px -32px 0px" },
+    );
+    nodes.forEach((node) => observer.observe(node));
+    return () => observer.disconnect();
+  }, [scope]);
+}
+
+function KineticHeadline({ text, startIndex = 0 }: { text: string; startIndex?: number }) {
+  return (
+    <span aria-label={text}>
+      {text.split(" ").map((word, index) => (
+        <span
+          className="kinetic-word-wrap"
+          key={`${word}-${index}`}
+          aria-hidden="true"
+        >
+          <span
+            className="kinetic-word"
+            style={{ "--word-index": startIndex + index } as CSSProperties}
+          >
+            {word}
+          </span>{" "}
+        </span>
+      ))}
+    </span>
+  );
+}
+
 function ConsoleApp({
   user,
   onLogout,
@@ -86,6 +133,7 @@ function ConsoleApp({
 }) {
   const location = useLocation();
   const navigate = useNavigate();
+  useKineticReveals(location.pathname);
   const [live, setLive] = useState(true);
   const [queueCount, setQueueCount] = useState(0);
   const route: RouteKey = location.pathname.includes("overview")
@@ -115,6 +163,7 @@ function ConsoleApp({
           onLogout={onLogout}
         />
         <main className="mx-auto w-[min(1440px,100%)] px-[clamp(24px,5vw,72px)] pt-[38px] pb-[72px] max-[900px]:px-[18px] max-[900px]:pt-[30px] max-[900px]:pb-[54px]">
+          <div key={route} className="kinetic-page-in">
           {route === "overview" ? (
             <Overview onLiveChange={setLive} />
           ) : route === "runs" ? (
@@ -126,6 +175,7 @@ function ConsoleApp({
               reviewer={user.login}
             />
           )}
+          </div>
         </main>
       </div>
     </div>
@@ -141,6 +191,7 @@ function HomePage({
   authError: string | null;
   onLogout: () => void;
 }) {
+  useKineticReveals("home");
   const installUrl = "/auth/github/install";
   const [heroStep, setHeroStep] = useState(0);
   const heroStates = [
@@ -211,9 +262,9 @@ function HomePage({
               : "Human-calibrated code review"}
           </div>
           <h1 className="max-w-[700px] text-[clamp(48px,7vw,84px)] font-black leading-[0.95] tracking-[-0.07em] text-ink">
-            Ship faster.
+            <KineticHeadline text="Ship faster." />
             <br />
-            <span className="text-lime">Trust deeper.</span>
+            <span className="text-lime"><KineticHeadline text="Trust deeper." startIndex={2} /></span>
           </h1>
           <p className="mt-8 max-w-[540px] text-[17px] leading-[1.65] text-muted">
             Perchly reviews every pull request with specialist agents, then
@@ -222,16 +273,16 @@ function HomePage({
           <div className="mt-9 flex flex-wrap gap-3">
             <a
               href={user ? "/console" : "/auth/github"}
-              className="group inline-flex items-center gap-3 rounded-md bg-lime px-5 py-3.5 text-[13px] font-extrabold text-[#11170f] transition duration-300 hover:-translate-y-0.5 hover:bg-[#dcff8a] hover:shadow-[0_12px_30px_rgba(201,243,107,0.16)]"
+              className="kinetic-button group inline-flex items-center gap-3 rounded-md bg-lime px-5 py-3.5 text-[13px] font-extrabold text-[#11170f] hover:bg-[#dcff8a] hover:shadow-[0_12px_30px_rgba(201,243,107,0.16)]"
             >
               {user ? "Go to console" : "Sign in with GitHub"}{" "}
-              <span className="transition-transform duration-300 group-hover:translate-x-1">
+              <span className="kinetic-arrow">
                 →
               </span>
             </a>
             <a
               href={installUrl}
-              className="inline-flex items-center gap-2 rounded-md border border-line-strong px-5 py-3.5 text-[13px] font-bold text-ink transition duration-300 hover:-translate-y-0.5 hover:border-cyan hover:text-cyan"
+              className="kinetic-button inline-flex items-center gap-2 rounded-md border border-line-strong px-5 py-3.5 text-[13px] font-bold text-ink hover:border-cyan hover:text-cyan"
             >
               Install the app <span>↗</span>
             </a>
@@ -247,7 +298,7 @@ function HomePage({
             <span>Fix PRs included</span>
           </div>
         </div>
-        <ReviewPreview />
+        <div data-reveal="scale"><ReviewPreview /></div>
       </section>
       <section className="relative border-y border-line bg-panel/55">
         <div className="mx-auto grid max-w-[1240px] gap-8 px-6 py-16 lg:grid-cols-3 lg:px-10">
@@ -340,6 +391,7 @@ function WorkflowSection() {
             ],
           ].map(([number, title, copy]) => (
             <article
+              data-reveal="scale"
               key={number}
               className="group rounded-lg border border-line bg-panel p-5 transition duration-300 hover:-translate-y-1 hover:border-line-strong"
             >
@@ -363,7 +415,7 @@ function CalibrationSection() {
   return (
     <section className="border-y border-line bg-[#0e1411]">
       <div className="mx-auto grid max-w-[1240px] gap-12 px-6 py-20 lg:grid-cols-[1.1fr_0.9fr] lg:items-center lg:px-10 lg:py-28">
-        <div className="overflow-hidden rounded-lg border border-line bg-[#0a0e0c] font-mono text-[11px] leading-[1.9] shadow-[0_20px_70px_rgba(0,0,0,0.25)]">
+        <div data-reveal="scale" className="overflow-hidden rounded-lg border border-line bg-[#0a0e0c] font-mono text-[11px] leading-[1.9] shadow-[0_20px_70px_rgba(0,0,0,0.25)]">
           <div className="flex items-center gap-2 border-b border-line px-4 py-3 text-faint">
             <span className="size-2 rounded-full bg-red/70" />
             <span className="size-2 rounded-full bg-orange/70" />
@@ -465,7 +517,7 @@ function Feature({
   children: string;
 }) {
   return (
-    <article className="group border-t border-line pt-4 transition duration-300 hover:-translate-y-1">
+    <article data-reveal="left" className="group border-t border-line pt-4 transition duration-300 hover:-translate-y-1">
       <p
         className={`font-mono text-[10px] uppercase tracking-[0.12em] ${color}`}
       >
