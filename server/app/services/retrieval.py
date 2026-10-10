@@ -331,8 +331,8 @@ class RetrievalService:
         for attempt in range(3):
             connection = _connect()
             try:
-                register_vector(connection)
                 _initialize_schema(connection)
+                register_vector(connection)
                 repository_id = _upsert_repository(connection, repository)
                 _store_chunks(
                     connection,
@@ -383,8 +383,8 @@ class RetrievalService:
         embeddings = _embed(client, [chunk.content for chunk in chunks], telemetry_ctx=telemetry_ctx)
         connection = _connect()
         try:
-            register_vector(connection)
             _initialize_schema(connection)
+            register_vector(connection)
             repository_id = _upsert_repository(
                 connection, repository, default_branch=default_branch, indexed_sha=revision
             )
@@ -627,7 +627,7 @@ def _upsert_repository(
     row = _run(connection,
         """
         INSERT INTO repositories (full_name, default_branch, indexed_sha, indexed_at)
-        VALUES (%s, %s, %s, CASE WHEN %s IS NULL THEN NULL ELSE CURRENT_TIMESTAMP END)
+        VALUES (%s, %s, %s, CASE WHEN %s::text IS NULL THEN NULL ELSE CURRENT_TIMESTAMP END)
         ON CONFLICT (full_name) DO UPDATE SET
             default_branch = COALESCE(EXCLUDED.default_branch, repositories.default_branch),
             indexed_sha = COALESCE(EXCLUDED.indexed_sha, repositories.indexed_sha),
