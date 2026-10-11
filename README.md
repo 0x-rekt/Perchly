@@ -13,6 +13,10 @@ reviewable unified diff, shows a preview in the console, and—after confirmatio
 creates or reuses a branch and opens a GitHub PR. Generated fix PRs remain normal
 human-reviewable PRs; Perchly ignores their webhook events to prevent recursive reviews.
 
+## Demo
+
+[Watch the Perchly demo video](https://drive.google.com/file/d/1MDqm_MivHxi-shijBSdFO89fMEzO0yaK/view?usp=sharing)
+
 ---
 
 ## Table of Contents
